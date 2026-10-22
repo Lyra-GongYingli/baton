@@ -4,6 +4,7 @@ import type { BatonApi, MainEvent } from '../../shared/types'
 interface Bridge {
   call(name: string, ...args: unknown[]): Promise<unknown>
   on(event: MainEvent, cb: (...args: unknown[]) => void): () => void
+  pathForFile(file: File): string
 }
 
 declare global {

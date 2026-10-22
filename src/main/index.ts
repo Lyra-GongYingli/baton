@@ -7,18 +7,16 @@ import {
   Menu,
   nativeImage,
   Notification,
-  screen,
   shell,
   Tray
 } from 'electron'
 import { join } from 'node:path'
 import type { BatonApi, MainEvent } from '../shared/types'
-import { generateBreakpoint } from './ai'
 import * as db from './db'
+import * as dock from './dock'
 import * as settings from './settings'
 
 let mainWindow: BrowserWindow | null = null
-let captureWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
 
@@ -38,6 +36,7 @@ const webPreferences = {
   nodeIntegration: false
 }
 
+/** 大窗口：做细一点的编辑。平时 Baton 只住在侧边栏里，打开大窗口时才出现在程序坞 */
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1240,
@@ -50,12 +49,11 @@ function createMainWindow(): void {
     backgroundColor: '#f7f7f5',
     webPreferences
   })
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
-  // 关窗口只是隐藏，菜单栏和快捷键继续工作
   mainWindow.on('close', (e) => {
     if (!quitting) {
       e.preventDefault()
       mainWindow?.hide()
+      app.dock?.hide()
     }
   })
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -65,48 +63,17 @@ function createMainWindow(): void {
   loadRenderer(mainWindow)
 }
 
-function showMainWindow(threadId?: string): void {
+function showMainWindow(taskId?: string): void {
   if (!mainWindow) createMainWindow()
-  mainWindow!.show()
-  mainWindow!.focus()
-  if (threadId) mainWindow!.webContents.send('navigate', threadId)
-}
-
-function createCaptureWindow(): void {
-  captureWindow = new BrowserWindow({
-    width: 560,
-    height: 420,
-    show: false,
-    frame: false,
-    resizable: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    fullscreenable: false,
-    transparent: true,
-    vibrancy: 'popover',
-    visualEffectState: 'active',
-    webPreferences
-  })
-  captureWindow.on('blur', () => captureWindow?.hide())
-  captureWindow.on('close', (e) => {
-    if (!quitting) {
-      e.preventDefault()
-      captureWindow?.hide()
-    }
-  })
-  loadRenderer(captureWindow, 'capture')
-}
-
-function showCapture(): void {
-  if (!captureWindow) createCaptureWindow()
-  // 出现在鼠标所在的屏幕中上方
-  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-  const { x, y, width, height } = display.workArea
-  const [w] = captureWindow!.getSize()
-  captureWindow!.setPosition(Math.round(x + (width - w) / 2), Math.round(y + height * 0.22))
-  captureWindow!.webContents.send('capture-opened')
-  captureWindow!.show()
-  captureWindow!.focus()
+  const win = mainWindow!
+  app.dock?.show()
+  const reveal = (): void => {
+    win.show()
+    win.focus()
+    if (taskId) win.webContents.send('navigate', taskId)
+  }
+  if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal)
+  else reveal()
 }
 
 function broadcast(event: MainEvent, ...args: unknown[]): void {
@@ -121,34 +88,24 @@ function notify(title: string, body: string): void {
 
 function refreshTray(): void {
   if (!tray) return
-  const { review, running } = db.dashboard()
-  tray.setTitle(review.length > 0 ? ` ${review.length}` : '')
-  tray.setToolTip(`Baton · ${review.length} 个等你审核，${running.length} 个 AI 在跑`)
+  const board = db.processBoard()
+  const all = [...board.unassigned, ...Object.values(board.lanes).flat()]
+  const running = all.filter((i) => i.status === 'ai_running')
+  tray.setToolTip(`Baton · ${running.length} 个 AI 在跑`)
 
+  const item = (i: (typeof all)[number]): Electron.MenuItemConstructorOptions => ({
+    label: `  S${i.ref} ${i.title} · ${i.taskTitle}`,
+    click: () => dock.setDockOpen(true, { focus: true, taskId: i.taskId })
+  })
   const items: Electron.MenuItemConstructorOptions[] = [
-    { label: review.length ? `等我审核（${review.length}）` : '没有等你审核的步骤', enabled: false },
-    ...review.slice(0, 10).map((r) => ({
-      label: `  S${r.stepRef} ${r.stepTitle} · ${r.threadTitle}`,
-      click: () => showMainWindow(r.threadId)
-    }))
-  ]
-  if (running.length) {
-    items.push(
-      { type: 'separator' },
-      { label: `AI 在跑（${running.length}）`, enabled: false },
-      ...running.slice(0, 10).map((r) => ({
-        label: `  S${r.stepRef} ${r.stepTitle} · ${r.threadTitle}`,
-        click: () => showMainWindow(r.threadId)
-      }))
-    )
-  }
-  items.push(
+    { label: running.length ? `AI 在跑（${running.length}）` : '没有 AI 在跑', enabled: false },
+    ...running.slice(0, 10).map(item),
     { type: 'separator' },
-    { label: '记断点…', accelerator: settings.SHORTCUTS.capture, click: showCapture },
-    { label: '打开 Baton', click: () => showMainWindow() },
+    { label: '显示侧边栏', accelerator: settings.SHORTCUTS.dock, click: () => dock.setDockOpen(true, { focus: true }) },
+    { label: '打开大窗口', click: () => showMainWindow() },
     { type: 'separator' },
     { label: '退出', role: 'quit' }
-  )
+  ]
   tray.setContextMenu(Menu.buildFromTemplate(items))
 }
 
@@ -161,28 +118,10 @@ function createTray(): void {
 
 // ---------- 全局快捷键 ----------
 
-function saveClipboardToCurrentThread(): void {
-  const text = clipboard.readText().trim()
-  if (!text) {
-    notify('剪贴板是空的', '先复制点内容再按快捷键')
-    return
-  }
-  const threadId = settings.getCurrentThreadId()
-  const detail = threadId ? db.getThread(threadId) : null
-  if (!detail) {
-    // 没有当前线程：打开记录窗口让用户选
-    showCapture()
-    return
-  }
-  db.createLog({ threadId: detail.thread.id, content: text, source: 'clipboard' })
-  afterMutation()
-  notify(`已存到「${detail.thread.title}」`, text.slice(0, 80))
-}
-
 function registerShortcuts(): void {
-  const ok1 = globalShortcut.register(settings.SHORTCUTS.capture, showCapture)
-  const ok2 = globalShortcut.register(settings.SHORTCUTS.clipboard, saveClipboardToCurrentThread)
-  if (!ok1 || !ok2) notify('部分快捷键注册失败', '可能被其他软件占用了')
+  if (!globalShortcut.register(settings.SHORTCUTS.dock, dock.toggleDock)) {
+    notify('快捷键注册失败', '⌃⌥D 可能被其他软件占用了')
+  }
 }
 
 // ---------- IPC ----------
@@ -192,15 +131,6 @@ function afterMutation(): void {
   refreshTray()
 }
 
-async function refreshBreakpoint(threadId: string) {
-  const detail = db.getThread(threadId)
-  if (!detail) throw new Error('线程不存在')
-  const breakpoint = await generateBreakpoint(detail)
-  db.updateThread(threadId, { breakpoint })
-  afterMutation()
-  return breakpoint
-}
-
 type Handlers = {
   [K in keyof BatonApi]: (
     ...args: Parameters<BatonApi[K]>
@@ -208,54 +138,69 @@ type Handlers = {
 }
 
 const handlers: Handlers = {
-  listThreads: db.listThreads,
-  getThread: db.getThread,
-  createThread: db.createThread,
-  updateThread: db.updateThread,
-  deleteThread: (id) => {
-    db.deleteThread(id)
-    if (settings.getCurrentThreadId() === id) settings.setCurrentThread(null)
-  },
-  createStep: db.createStep,
-  updateStep: db.updateStep,
-  moveStep: db.moveStep,
-  deleteStep: db.deleteStep,
-  createArtifact: db.createArtifact,
-  deleteArtifact: db.deleteArtifact,
-  createLog: db.createLog,
-  deleteLog: db.deleteLog,
-  dashboard: db.dashboard,
+  listProjects: db.listProjects,
+  createProject: db.createProject,
+  updateProject: db.updateProject,
+  deleteProject: db.deleteProject,
+  reorderProjects: db.reorderProjects,
 
-  refreshBreakpoint,
-  refreshBreakpointInBackground: (threadId) => {
-    refreshBreakpoint(threadId).catch((err: Error) => notify('断点卡更新失败', err.message))
+  getTask: db.getTask,
+  createTask: db.createTask,
+  updateTask: db.updateTask,
+  deleteTask: (id) => {
+    db.deleteTask(id)
+    if (settings.getCurrentTaskId() === id) settings.setCurrentTask(null)
   },
+  moveTask: db.moveTask,
+
+  createSubtask: db.createSubtask,
+  updateSubtask: db.updateSubtask,
+  reorderSubtasks: db.reorderSubtasks,
+  deleteSubtask: db.deleteSubtask,
+
+  processBoard: db.processBoard,
+  assignSubtask: db.assignSubtask,
 
   getSettings: settings.getPublicSettings,
-  setCurrentThread: settings.setCurrentThread,
-  setModel: settings.setModel,
-  setApiKey: settings.setApiKey,
-  clearApiKey: settings.clearApiKey,
+  setCurrentTask: (id) => {
+    settings.setCurrentTask(id)
+    broadcast('data-changed')
+  },
 
-  readClipboard: () => clipboard.readText(),
   copyText: (text) => clipboard.writeText(text),
   showDataDir: () => shell.showItemInFolder(join(app.getPath('userData'), 'baton.db')),
-  closeCapture: () => captureWindow?.hide()
+
+  dockOpen: (opts) => dock.setDockOpen(true, opts),
+  dockClose: (opts) => {
+    if (opts?.force || !settings.getDock().pinned) dock.setDockOpen(false)
+  },
+  dockClosed: dock.finishClose,
+  getDockState: dock.getDockState,
+  setDockPinned: dock.setPinned,
+  setDockSide: dock.setSide,
+  setDockHoverOpen: dock.setHoverOpen,
+  moveHandle: dock.moveHandle,
+  openMainWindow: (taskId) => {
+    showMainWindow(taskId)
+    if (!settings.getDock().pinned) dock.setDockOpen(false)
+  }
 }
 
 // 这些调用会改数据，完成后通知所有窗口刷新
 const MUTATIONS = new Set<keyof BatonApi>([
-  'createThread',
-  'updateThread',
-  'deleteThread',
-  'createStep',
-  'updateStep',
-  'moveStep',
-  'deleteStep',
-  'createArtifact',
-  'deleteArtifact',
-  'createLog',
-  'deleteLog'
+  'createProject',
+  'updateProject',
+  'deleteProject',
+  'reorderProjects',
+  'createTask',
+  'updateTask',
+  'deleteTask',
+  'moveTask',
+  'createSubtask',
+  'updateSubtask',
+  'reorderSubtasks',
+  'deleteSubtask',
+  'assignSubtask'
 ])
 
 ipcMain.handle('api', async (_e, name: keyof BatonApi, ...args: unknown[]) => {
@@ -274,17 +219,34 @@ if (process.env.BATON_DATA_DIR) app.setPath('userData', process.env.BATON_DATA_D
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => showMainWindow())
+  // 再次打开 Baton（比如从「应用程序」里双击）就展开侧边栏
+  app.on('second-instance', () => dock.setDockOpen(true, { focus: true }))
 
-  app.whenReady().then(() => {
-    db.openDb(join(app.getPath('userData'), 'baton.db'))
-    createMainWindow()
-    createCaptureWindow()
-    createTray()
-    registerShortcuts()
+  // 拖进窗口的文件不要让页面跳走（刷新同一个页面不拦）
+  app.on('web-contents-created', (_e, contents) => {
+    contents.on('will-navigate', (e, url) => {
+      if (url.split('#')[0] !== contents.getURL().split('#')[0]) e.preventDefault()
+    })
   })
 
-  app.on('activate', () => showMainWindow())
+  app.whenReady().then(() => {
+    const firstRun = settings.isFirstRun()
+    app.dock?.hide()
+    db.openDb(join(app.getPath('userData'), 'baton.db'))
+    dock.createDock({ load: loadRenderer, webPreferences })
+    createTray()
+    registerShortcuts()
+    // 第一次启动时展开侧边栏打个招呼，并写下设置文件，下次就不算第一次了
+    if (firstRun) {
+      settings.setDock({})
+      setTimeout(() => dock.setDockOpen(true), 800)
+    }
+  })
+
+  app.on('activate', () => {
+    if (mainWindow?.isVisible()) mainWindow.focus()
+    else dock.setDockOpen(true, { focus: true })
+  })
   app.on('before-quit', () => {
     quitting = true
   })

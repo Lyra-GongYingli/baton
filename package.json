@@ -12,7 +12,9 @@
     "build:mac": "electron-vite build && NODE_OPTIONS=--experimental-require-module electron-builder --mac --dir"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.1.0",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

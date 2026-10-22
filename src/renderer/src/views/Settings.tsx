@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { MODEL_OPTIONS } from '../../../shared/types'
+import type { DockSide } from '../../../shared/types'
 import { api, useData } from '../api'
+import { cx } from '../util'
 
 /** Electron 的快捷键写法 → Mac 符号 */
 function prettyShortcut(acc: string): string {
@@ -14,21 +14,8 @@ function prettyShortcut(acc: string): string {
 
 export function Settings() {
   const [settings, reload] = useData(() => api.getSettings(), [])
-  const [key, setKey] = useState('')
-  const [msg, setMsg] = useState('')
 
   if (!settings) return <div className="page" />
-
-  const saveKey = async (): Promise<void> => {
-    try {
-      await api.setApiKey(key)
-      setKey('')
-      setMsg('已保存（用系统钥匙串加密）')
-    } catch (err) {
-      setMsg(String((err as Error).message).replace(/^.*?Error: /, ''))
-    }
-    reload()
-  }
 
   return (
     <div className="page settings-page">
@@ -37,75 +24,63 @@ export function Settings() {
       </header>
 
       <section className="settings-section">
-        <h2>AI</h2>
+        <h2>侧边栏</h2>
         <div className="setting-row">
           <div>
-            <div className="setting-label">Anthropic API key</div>
-            <div className="muted small">
-              {settings.hasApiKey ? '已设置。' : '未设置。'}用于生成断点卡。在 platform.claude.com 创建，和 Claude
-              会员订阅分开计费。
-            </div>
+            <div className="setting-label">贴在屏幕哪一边</div>
+            <div className="muted small">把手也可以按住底部的小点上下拖动换位置。</div>
           </div>
-          <div className="setting-control">
-            <input
-              type="password"
-              value={key}
-              placeholder={settings.hasApiKey ? '••••••••（输入新的会覆盖）' : 'sk-ant-…'}
-              onChange={(e) => setKey(e.target.value)}
-            />
-            <button className="btn primary small" disabled={!key.trim()} onClick={saveKey}>
-              保存
-            </button>
-            {settings.hasApiKey && (
+          <div className="segmented">
+            {(['left', 'right'] as DockSide[]).map((side) => (
               <button
-                className="btn ghost small danger"
+                key={side}
+                className={cx(settings.dock.side === side && 'active')}
                 onClick={async () => {
-                  await api.clearApiKey()
-                  setMsg('已清除')
+                  await api.setDockSide(side)
                   reload()
                 }}
               >
-                清除
+                {side === 'left' ? '左边' : '右边'}
               </button>
-            )}
+            ))}
           </div>
         </div>
-        {msg && <p className="muted small">{msg}</p>}
-
-        <div className="setting-row">
+        <label className="setting-row">
           <div>
-            <div className="setting-label">模型</div>
-            <div className="muted small">断点卡用哪个模型生成。</div>
+            <div className="setting-label">鼠标碰到把手就展开</div>
+            <div className="muted small">关掉后需要点一下把手才展开，避免误碰。</div>
           </div>
-          <div className="setting-control">
-            <select
-              className="select"
-              value={settings.model}
-              onChange={async (e) => {
-                await api.setModel(e.target.value)
-                reload()
-              }}
-            >
-              {MODEL_OPTIONS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
+          <input
+            type="checkbox"
+            checked={settings.dock.hoverOpen}
+            onChange={async (e) => {
+              await api.setDockHoverOpen(e.target.checked)
+              reload()
+            }}
+          />
+        </label>
+        <label className="setting-row">
+          <div>
+            <div className="setting-label">一直展开（钉住）</div>
+            <div className="muted small">侧边栏右上角的图钉也能切换。</div>
           </div>
-        </div>
+          <input
+            type="checkbox"
+            checked={settings.dock.pinned}
+            onChange={async (e) => {
+              await api.setDockPinned(e.target.checked)
+              reload()
+            }}
+          />
+        </label>
       </section>
 
       <section className="settings-section">
         <h2>全局快捷键</h2>
-        <p className="muted small">在任何软件里都能用。关掉主窗口后 Baton 仍在菜单栏运行，快捷键继续有效。</p>
+        <p className="muted small">在任何软件里都能用。关掉大窗口后 Baton 仍在侧边和菜单栏运行，快捷键继续有效。</p>
         <div className="setting-row">
-          <div className="setting-label">记断点（打开快速记录小窗）</div>
-          <kbd>{prettyShortcut(settings.shortcuts.capture)}</kbd>
-        </div>
-        <div className="setting-row">
-          <div className="setting-label">把剪贴板存到当前线程</div>
-          <kbd>{prettyShortcut(settings.shortcuts.clipboard)}</kbd>
+          <div className="setting-label">展开 / 收起侧边栏</div>
+          <kbd>{prettyShortcut(settings.shortcuts.dock)}</kbd>
         </div>
       </section>
 

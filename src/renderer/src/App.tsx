@@ -1,52 +1,64 @@
 import { useEffect, useState } from 'react'
-import { THREAD_STATUS_LABEL, type ThreadStatus, type ThreadSummary } from '../../shared/types'
+import type { ProjectTree } from '../../shared/types'
 import { api, onMainEvent, useData } from './api'
+import { ProcessView } from './board/ProcessView'
+import { ProjectView } from './board/ProjectView'
+import { CopyFlash } from './components/Copy'
+import { Toast } from './dock/parts'
 import { cx } from './util'
-import { Dashboard } from './views/Dashboard'
-import { NewThreadDialog } from './views/NewThreadDialog'
+import { NewTaskDialog } from './views/NewTaskDialog'
 import { Settings } from './views/Settings'
-import { ThreadView } from './views/ThreadView'
+import { TaskView } from './views/TaskView'
 
-export type View = { type: 'dashboard' } | { type: 'settings' } | { type: 'thread'; id: string; focusStepId?: string }
+export type View = { type: 'projects' } | { type: 'process' } | { type: 'settings' } | { type: 'task'; id: string }
 
+/** 大窗口 */
 export function App() {
-  const [view, setView] = useState<View>({ type: 'dashboard' })
+  const [view, setView] = useState<View>({ type: 'projects' })
   const [creating, setCreating] = useState(false)
-  const [threads] = useData(() => api.listThreads(), [])
-  const [settings, reloadSettings] = useData(() => api.getSettings(), [])
+  const [trees] = useData(() => api.listProjects(), [])
+  const [settings] = useData(() => api.getSettings(), [])
 
-  // 菜单栏点击某个步骤时，主进程让这里跳到对应线程
-  useEffect(() => onMainEvent('navigate', (id) => setView({ type: 'thread', id: id as string })), [])
+  // 侧边栏 / 菜单栏让大窗口跳到某个任务
+  useEffect(() => onMainEvent('navigate', (id) => setView({ type: 'task', id: id as string })), [])
 
-  // 打开哪个线程，哪个就是"当前线程"（剪贴板快捷键会存到这里）
+  // 打开哪个任务，哪个就是「当前任务」（剪贴板快捷键会存到这里）
   useEffect(() => {
-    if (view.type === 'thread') api.setCurrentThread(view.id).then(reloadSettings)
-  }, [view, reloadSettings])
+    if (view.type === 'task') api.setCurrentTask(view.id)
+  }, [view])
 
-  const open = (id: string, focusStepId?: string): void => setView({ type: 'thread', id, focusStepId })
+  const open = (id: string): void => setView({ type: 'task', id })
 
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="sidebar-drag" />
-        <div className="brand">Baton</div>
-        <nav>
+        <div className="brand">
+          <span className="baton-mark" />
+          Baton
+        </div>
+        <nav className="main-nav">
           <button
-            className={cx('nav-item', view.type === 'dashboard' && 'active')}
-            onClick={() => setView({ type: 'dashboard' })}
+            className={cx('nav-item', view.type === 'projects' && 'active')}
+            onClick={() => setView({ type: 'projects' })}
           >
-            总览
+            项目视图
+          </button>
+          <button
+            className={cx('nav-item', view.type === 'process' && 'active')}
+            onClick={() => setView({ type: 'process' })}
+          >
+            进程视图
           </button>
         </nav>
 
         <div className="thread-groups">
-          {(['active', 'paused', 'done'] as ThreadStatus[]).map((status) => (
-            <ThreadGroup
-              key={status}
-              status={status}
-              threads={(threads ?? []).filter((t) => t.status === status)}
-              currentId={settings?.currentThreadId ?? null}
-              activeId={view.type === 'thread' ? view.id : null}
+          {(trees ?? []).map((tree) => (
+            <ProjectTreeItem
+              key={tree.project.id}
+              tree={tree}
+              currentId={settings?.currentTaskId ?? null}
+              activeId={view.type === 'task' ? view.id : null}
               onOpen={open}
             />
           ))}
@@ -54,7 +66,7 @@ export function App() {
 
         <div className="sidebar-footer">
           <button className="new-thread" onClick={() => setCreating(true)}>
-            ＋ 新线程
+            ＋ 新任务
           </button>
           <button
             className={cx('nav-item', view.type === 'settings' && 'active')}
@@ -66,22 +78,25 @@ export function App() {
       </aside>
 
       <main className="main">
-        {view.type === 'dashboard' && (
-          <Dashboard threads={threads ?? []} onOpen={open} onCreate={() => setCreating(true)} />
+        {view.type === 'projects' && (
+          <div className="page wide">
+            <header className="page-header">
+              <h1>项目</h1>
+              <p className="muted">按住卡片拖动可以排序，也可以拖到别的项目里。双击文字复制。</p>
+            </header>
+            {trees && <ProjectView wide trees={trees} onOpenTask={open} />}
+          </div>
         )}
+        {view.type === 'process' && <ProcessPage onOpenTask={open} />}
         {view.type === 'settings' && <Settings />}
-        {view.type === 'thread' && (
-          <ThreadView
-            key={view.id}
-            id={view.id}
-            focusStepId={view.focusStepId}
-            onDeleted={() => setView({ type: 'dashboard' })}
-          />
+        {view.type === 'task' && (
+          <TaskView key={view.id} id={view.id} onDeleted={() => setView({ type: 'projects' })} />
         )}
       </main>
 
       {creating && (
-        <NewThreadDialog
+        <NewTaskDialog
+          trees={trees ?? []}
           onClose={() => setCreating(false)}
           onCreated={(id) => {
             setCreating(false)
@@ -89,39 +104,54 @@ export function App() {
           }}
         />
       )}
+      <Toast />
+      <CopyFlash />
     </div>
   )
 }
 
-function ThreadGroup(props: {
-  status: ThreadStatus
-  threads: ThreadSummary[]
+function ProcessPage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
+  const [board] = useData(() => api.processBoard(), [])
+  return (
+    <div className="page wide">
+      <header className="page-header">
+        <h1>进程</h1>
+        <p className="muted">谁在做什么，一眼看清。把卡片拖到某个头像下面，就是交给 TA。</p>
+      </header>
+      {board && <ProcessView wide board={board} onOpenTask={onOpenTask} />}
+    </div>
+  )
+}
+
+function ProjectTreeItem(props: {
+  tree: ProjectTree
   currentId: string | null
   activeId: string | null
   onOpen: (id: string) => void
 }) {
-  const [collapsed, setCollapsed] = useState(props.status === 'done')
-  if (props.threads.length === 0 && props.status !== 'active') return null
+  const { project, tasks } = props.tree
+  const [collapsed, setCollapsed] = useState(false)
+  const visible = tasks.filter((t) => t.status !== 'done')
   return (
     <div className="thread-group">
       <button className="group-title" onClick={() => setCollapsed(!collapsed)}>
         <span className={cx('chevron', collapsed && 'collapsed')}>▾</span>
-        {THREAD_STATUS_LABEL[props.status]}
-        <span className="count">{props.threads.length}</span>
+        <span className="thread-color" style={{ background: project.color }} />
+        {project.title}
+        <span className="count">{visible.length}</span>
       </button>
       {!collapsed &&
-        props.threads.map((t) => (
+        visible.map((t) => (
           <button
             key={t.id}
-            className={cx('thread-item', props.activeId === t.id && 'active')}
+            className={cx('thread-item', props.activeId === t.id && 'active', t.status === 'paused' && 'paused')}
             onClick={() => props.onOpen(t.id)}
           >
             <span className="thread-item-title">{t.title}</span>
-            {t.reviewCount > 0 && <span className="badge review">{t.reviewCount}</span>}
-            {props.currentId === t.id && <span className="current-mark" title="当前线程：剪贴板快捷键会存到这里" />}
+            {props.currentId === t.id && <span className="current-mark" title="当前任务：剪贴板快捷键会存到这里" />}
           </button>
         ))}
-      {!collapsed && props.threads.length === 0 && <div className="group-empty">还没有线程</div>}
+      {!collapsed && visible.length === 0 && <div className="group-empty">还没有任务</div>}
     </div>
   )
 }

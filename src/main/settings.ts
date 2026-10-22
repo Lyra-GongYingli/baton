@@ -1,24 +1,28 @@
-import { app, safeStorage } from 'electron'
+import { app } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { MODEL_OPTIONS, type PublicSettings } from '../shared/types'
+import type { DockSettings, DockSide, PublicSettings } from '../shared/types'
 
 export const SHORTCUTS = {
-  capture: 'Control+Alt+B',
-  clipboard: 'Control+Alt+V'
+  dock: 'Control+Alt+D'
 }
 
 interface StoredSettings {
-  currentThreadId: string | null
-  model: string
-  /** 用系统钥匙串加密后的 API key（base64） */
-  apiKeyEnc: string | null
+  currentTaskId: string | null
+  dock: DockSettings
+  /** 把手在屏幕上的纵向位置，0 = 顶部，1 = 底部 */
+  handleRatio: number
 }
 
 const DEFAULTS: StoredSettings = {
-  currentThreadId: null,
-  model: MODEL_OPTIONS[0].id,
-  apiKeyEnc: null
+  currentTaskId: null,
+  dock: { side: 'right', pinned: false, hoverOpen: true },
+  handleRatio: 0.32
+}
+
+/** settings.json 是不是第一次创建（用来在首次启动时展开侧边栏打个招呼） */
+export function isFirstRun(): boolean {
+  return !existsSync(file())
 }
 
 let cache: StoredSettings | null = null
@@ -32,7 +36,14 @@ function load(): StoredSettings {
   cache = { ...DEFAULTS }
   if (existsSync(file())) {
     try {
-      cache = { ...DEFAULTS, ...JSON.parse(readFileSync(file(), 'utf8')) }
+      const stored = JSON.parse(readFileSync(file(), 'utf8'))
+      // 只读认识的字段；旧版的 API key、模型等字段在下次保存时自然丢掉
+      cache = {
+        // 第一版叫 currentThreadId，任务 id 没变，直接沿用
+        currentTaskId: stored.currentTaskId ?? stored.currentThreadId ?? null,
+        dock: { ...DEFAULTS.dock, ...stored.dock },
+        handleRatio: stored.handleRatio ?? DEFAULTS.handleRatio
+      }
     } catch {
       // 文件坏了就用默认值
     }
@@ -48,47 +59,37 @@ function save(patch: Partial<StoredSettings>): void {
 export function getPublicSettings(): PublicSettings {
   const s = load()
   return {
-    currentThreadId: s.currentThreadId,
-    model: s.model,
-    hasApiKey: Boolean(s.apiKeyEnc),
+    currentTaskId: s.currentTaskId,
     dataDir: app.getPath('userData'),
-    shortcuts: SHORTCUTS
+    shortcuts: SHORTCUTS,
+    dock: s.dock
   }
 }
 
-export function getCurrentThreadId(): string | null {
-  return load().currentThreadId
+export function getDock(): DockSettings {
+  return load().dock
 }
 
-export function setCurrentThread(id: string | null): void {
-  save({ currentThreadId: id })
+export function setDock(patch: Partial<DockSettings>): void {
+  save({ dock: { ...load().dock, ...patch } })
 }
 
-export function getModel(): string {
-  return load().model
+export function setDockSide(side: DockSide): void {
+  setDock({ side })
 }
 
-export function setModel(model: string): void {
-  save({ model })
+export function getHandleRatio(): number {
+  return load().handleRatio
 }
 
-export function setApiKey(key: string): void {
-  const trimmed = key.trim()
-  if (!trimmed) return
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('系统钥匙串不可用，无法安全保存 key')
-  save({ apiKeyEnc: safeStorage.encryptString(trimmed).toString('base64') })
+export function setHandleRatio(ratio: number): void {
+  save({ handleRatio: Math.min(0.92, Math.max(0.02, ratio)) })
 }
 
-export function clearApiKey(): void {
-  save({ apiKeyEnc: null })
+export function getCurrentTaskId(): string | null {
+  return load().currentTaskId
 }
 
-export function getApiKey(): string | null {
-  const enc = load().apiKeyEnc
-  if (!enc) return null
-  try {
-    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
-  } catch {
-    return null
-  }
+export function setCurrentTask(id: string | null): void {
+  save({ currentTaskId: id })
 }

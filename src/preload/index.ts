@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { MainEvent } from '../shared/types'
 
 contextBridge.exposeInMainWorld('baton', {
@@ -9,5 +9,7 @@ contextBridge.exposeInMainWorld('baton', {
     return () => {
       ipcRenderer.removeListener(event, listener)
     }
-  }
+  },
+  /** 拖进来的文件在磁盘上的路径 */
+  pathForFile: (file: File) => webUtils.getPathForFile(file)
 })

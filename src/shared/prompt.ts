@@ -1,31 +1,22 @@
-import type { Step, Thread } from './types'
+import type { Subtask, Task } from './types'
 
-// 提示词里的占位符：{{S3}} = 步骤 S3 的产物，{{目标}} = 线程目标
-const PLACEHOLDER = /\{\{\s*(S(\d+)|目标)\s*\}\}/gi
+// 提示词里可以写 {{目标}}，复制时换成任务目标
 
-/** 找出提示词引用了哪些步骤（按编号，去重、升序） */
-export function referencedSteps(prompt: string): number[] {
+/** 找出提示词引用了哪些子任务（第一版的 {{S1}} 写法，只在迁移老数据时用） */
+export function referencedSubtasks(prompt: string): number[] {
   const refs = new Set<number>()
-  for (const m of prompt.matchAll(PLACEHOLDER)) {
-    if (m[2]) refs.add(Number(m[2]))
-  }
+  for (const m of prompt.matchAll(/\{\{\s*S(\d+)\s*\}\}/gi)) refs.add(Number(m[1]))
   return [...refs].sort((a, b) => a - b)
 }
 
-export function stepOutputText(step: Step): string {
-  return step.outputs
-    .map((a) => (a.kind === 'link' ? `${a.title ? a.title + '：' : ''}${a.content}` : a.content))
-    .join('\n\n---\n\n')
+/** 复制给 AI 的完整提示词 */
+export function expandPrompt(prompt: string, task: Task): string {
+  return prompt.replace(/\{\{\s*目标\s*\}\}/g, () => task.goal || '（任务还没写目标）')
 }
 
-/** 把占位符展开成真实内容，复制给 AI 用 */
-export function expandPrompt(prompt: string, thread: Thread, steps: Step[]): string {
-  const byRef = new Map(steps.map((s) => [s.ref, s]))
-  return prompt.replace(PLACEHOLDER, (whole, _key: string, num: string | undefined) => {
-    if (!num) return thread.goal || '（线程还没写目标）'
-    const step = byRef.get(Number(num))
-    if (!step) return `【S${num} 不存在】`
-    const text = stepOutputText(step)
-    return text || `【S${num}「${step.title}」还没有产物】`
-  })
+/** 接力子任务的上一棒（同一层里按当前顺序的前一个） */
+export function previousOf(subtask: Subtask, siblings: Subtask[]): Subtask | null {
+  if (!subtask.chained) return null
+  const i = siblings.findIndex((s) => s.id === subtask.id)
+  return i > 0 ? siblings[i - 1] : null
 }
