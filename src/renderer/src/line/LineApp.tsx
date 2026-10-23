@@ -1,25 +1,49 @@
-import { DndContext, DragOverlay, MeasuringStrategy, pointerWithin, useDraggable, useDroppable } from '@dnd-kit/core'
+import {
+  DndContext,
+  DragOverlay,
+  MeasuringStrategy,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  type CollisionDetection
+} from '@dnd-kit/core'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { AGENTS, AGENT_BY_ID } from '../../../shared/agents'
-import { STATUS_LABEL, type Assignee, type ProcessItem } from '../../../shared/types'
+import { STATUS_LABEL, type LineState, type Status, type TaskDetail } from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
-import { AgentIcon } from '../components/AgentIcon'
-import { isDragging, markDragging, useDndSensors } from '../components/Sortable'
+import { TaskBody } from '../board/TaskBody'
+import { CopyFlash } from '../components/Copy'
+import { draggingOrJustDragged, isDragging, markDragging, useDndSensors } from '../components/Sortable'
+import { openStatusMenu, StatusMenuHost } from '../components/StatusMenu'
+import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
+import { Icon, Toast, Track } from '../dock/parts'
 import { cx } from '../util'
 
-// 晾衣绳：进程视图挂在屏幕顶部。每个执行者一张卡片夹在绳子上，写着 TA 在跑什么、排着什么。
-// 点一行复制提示词，双击打开这个任务，按住拖到别的卡片上就是交给 TA。
+// 晾衣绳：屏幕顶上一根绳子，主角是进行中的任务——每个任务一张卡片。
+// 卡片里就是侧边栏的任务页（紧凑版）：改标题、目标、提示词，加 / 删 / 拖动子任务和子子任务，换状态、换人，复制提示词。
+// 待办、已暂停、今天完成的任务记在最左边的一张便签上，当辅助信息。
+// 按住卡片顶部那一条拖到便签的某一栏 = 改成那个状态，从便签上拖一个任务到绳子上 = 开始做（进行中）。
 
-const CARD_W = 216
-const TAG_W = 112
+const CARD_W = 300
+const NOTE_W = 196
 const GAP = 30
-const MAX_ROWS = 4
+/** 便签每一栏最多列几个任务 */
+const NOTE_ROWS = 3
 /** 绳子两头挂在屏幕顶边往下这么多 */
 const ROPE_Y = 8
-const LANE = 'lane:'
+const SECTION = 'section:'
+const ACTIVE_ZONE = 'active-zone'
+const NOTE_SECTIONS: { status: Status; name: string }[] = [
+  { status: 'todo', name: '待办' },
+  { status: 'paused', name: '已暂停' },
+  { status: 'done', name: '今天完成' }
+]
 
 type Phase = 'hidden' | 'in' | 'out'
-type Flash = { key: string; rowId?: string; text: string; id: number }
+type Flash = { key: string; text: string; id: number }
+/** 被拖动的东西：一张任务卡，或便签上的一个任务 */
+type Dragged = { taskId: string; title: string; color: string }
+/** 便签上的一行 */
+type NoteEntry = { id: string; title: string; color: string; projectTitle: string; status: Status }
 
 // 窗口的空白处要让点击穿过去，鼠标进到卡片上时才接住
 let interactive = false
@@ -29,42 +53,48 @@ function setInteractive(on: boolean): void {
   api.lineInteractive(on)
 }
 
-function laneOf(item: ProcessItem): Assignee {
-  if (item.agent) return item.agent
-  return item.status === 'doing' ? 'me' : ''
+/** 指针同时落在便签某一栏和整片绳子区域时，以便签那一栏为准 */
+const preferSections: CollisionDetection = (args) => {
+  const hits = pointerWithin(args)
+  return [...hits.filter((h) => String(h.id).startsWith(SECTION)), ...hits.filter((h) => !String(h.id).startsWith(SECTION))]
 }
 
 export function LineApp() {
-  const [board, reload] = useData(() => api.processBoard(), [])
+  const [board, reload] = useData(() => api.lineBoard(), [])
   const [phase, setPhase] = useState<Phase>('hidden')
   const [width, setWidth] = useState(window.innerWidth)
   // 拖过去先在本地挪好，等数据刷新回来再以数据为准
-  const [moved, setMoved] = useState<Record<string, Assignee>>({})
-  const [dragItem, setDragItem] = useState<ProcessItem | null>(null)
+  const [moved, setMoved] = useState<Record<string, Status>>({})
+  const [dragged, setDragged] = useState<Dragged | null>(null)
   const [flash, setFlash] = useState<Flash | null>(null)
+  const [pinned, setPinned] = useState(false)
   const sensors = useDndSensors()
   const outTimer = useRef(0)
 
   useEffect(() => setMoved({}), [board])
 
-  useEffect(
-    () =>
-      onMainEvent('line-state', (s) => {
-        clearTimeout(outTimer.current)
-        if ((s as { open: boolean }).open) {
-          reload()
-          setPhase('in')
-          return
-        }
-        setPhase((p) => (p === 'hidden' ? p : 'out'))
-        outTimer.current = window.setTimeout(() => {
-          setPhase('hidden')
-          interactive = false
-          api.lineClosed()
-        }, 620)
-      }),
-    [reload]
-  )
+  useEffect(() => {
+    const apply = (s: LineState): void => {
+      setPinned(s.pinned)
+      clearTimeout(outTimer.current)
+      if (s.open) {
+        reload()
+        setPhase('in')
+        return
+      }
+      setPhase((p) => (p === 'hidden' ? p : 'out'))
+      outTimer.current = window.setTimeout(() => {
+        setPhase('hidden')
+        interactive = false
+        api.lineClosed()
+      }, 620)
+    }
+    // 重启后如果是固定着的，窗口一加载好就要挂出来：主动问一次状态
+    api.lineState().then((s) => {
+      if (s.open) apply(s)
+    })
+    return onMainEvent('line-state', (s) => apply(s as LineState))
+  }, [reload])
 
   useEffect(() => {
     const move = (e: MouseEvent): void => {
@@ -75,7 +105,9 @@ export function LineApp() {
       if (!isDragging()) setInteractive(false)
     }
     const key = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') api.lineClose()
+      // 在输入框里按的 Esc 是「取消编辑」，拖动时按的是「取消拖动」，都不收起；固定着的也不收
+      const inField = (e.target as HTMLElement | null)?.closest?.('input, textarea, select')
+      if (e.key === 'Escape' && !inField && !draggingOrJustDragged()) api.lineClose()
     }
     const resize = (): void => setWidth(window.innerWidth)
     window.addEventListener('mousemove', move)
@@ -98,13 +130,29 @@ export function LineApp() {
 
   if (!board || phase === 'hidden') return <div className="line-root" />
 
-  const all = [...board.unassigned, ...AGENTS.flatMap((a) => board.lanes[a.id])]
-  const laneOfItem = (i: ProcessItem): Assignee => moved[i.subtaskId] ?? laneOf(i)
-  const itemsIn = (lane: Assignee): ProcessItem[] => all.filter((i) => laneOfItem(i) === lane)
-  const lanes: Assignee[] = [...AGENTS.map((a) => a.id), ...(itemsIn('').length ? (['' as const] as Assignee[]) : [])]
+  // 所有任务放在一起，按（拖动后的）状态分：进行中的挂卡片，其余的记在便签上
+  const entries: (NoteEntry & { detail?: TaskDetail })[] = [
+    ...board.active.map((d) => ({
+      id: d.task.id,
+      title: d.task.title,
+      color: d.project.color,
+      projectTitle: d.project.title,
+      status: 'active' as Status,
+      detail: d
+    })),
+    ...[...board.todo, ...board.paused, ...board.done].map((t) => ({
+      id: t.id,
+      title: t.title,
+      color: t.color,
+      projectTitle: t.projectTitle,
+      status: t.status
+    }))
+  ].map((e) => ({ ...e, status: moved[e.id] ?? e.status }))
+  const cards = entries.filter((e) => e.status === 'active' && e.detail).map((e) => e.detail as TaskDetail)
+  const noteOf = (status: Status): NoteEntry[] => entries.filter((e) => e.status === status)
 
-  // 卡片从左到右排开、整体居中；屏幕太窄就一起缩小。绳子是一条往下垂的弧线，卡片夹在弧线上
-  const widths = [TAG_W, ...lanes.map(() => CARD_W)]
+  // 便签在最左边，任务卡片依次排开、整体居中；屏幕太窄就一起缩小。绳子是一条往下垂的弧线，卡片夹在弧线上
+  const widths = [NOTE_W, ...(cards.length ? cards.map(() => CARD_W) : [CARD_W])]
   const total = widths.reduce((a, b) => a + b, 0) + GAP * (widths.length - 1)
   const scale = Math.min(1, (width - 48) / total)
   const sag = Math.min(54, Math.max(24, width * 0.03))
@@ -116,67 +164,64 @@ export function LineApp() {
     return c
   })
 
-  const copy = async (item: ProcessItem): Promise<void> => {
-    await api.copyText(item.promptExpanded || item.title)
-    setFlash({
-      key: laneOfItem(item) || 'none',
-      rowId: item.subtaskId,
-      text: item.promptExpanded ? '✓ 已复制' : '✓ 已复制标题',
-      id: Date.now()
-    })
+  const openTask = (taskId: string): void => {
+    api.dockOpen({ taskId, focus: true })
+  }
+
+  const setTaskStatus = (taskId: string, status: Status): void => {
+    const entry = entries.find((e) => e.id === taskId)
+    if (!entry || entry.status === status) return
+    setMoved({ ...moved, [taskId]: status })
+    api.updateTask(taskId, { status })
+    setFlash({ key: 'note', text: `「${entry.title}」→ ${STATUS_LABEL[status]}`, id: Date.now() })
   }
 
   const hangers: { key: string; node: ReactNode }[] = [
-    { key: 'tag', node: <Tag items={all} doneToday={board.doneToday} /> },
-    ...lanes.map((lane) => ({
-      key: lane || 'none',
-      node: (
-        <LaneCard
-          agent={lane}
-          items={itemsIn(lane)}
-          dragging={Boolean(dragItem)}
-          copiedRow={flash?.rowId}
-          onCopy={copy}
-          onOpen={(item) => api.dockOpen({ taskId: item.taskId, focus: true })}
-        />
-      )
-    }))
+    {
+      key: 'note',
+      node: <Note noteOf={noteOf} dragging={Boolean(dragged)} pinned={pinned} onOpen={openTask} onStatus={setTaskStatus} />
+    },
+    ...(cards.length
+      ? cards.map((d) => ({
+          key: d.task.id,
+          node: <TaskCard detail={d} onOpen={openTask} onStatus={setTaskStatus} />
+        }))
+      : [{ key: 'empty', node: <EmptyCard dragging={Boolean(dragged)} /> }])
   ]
 
   return (
-    <div className={cx('line-root', `phase-${phase}`, dragItem && 'is-dragging')}>
+    <div className={cx('line-root', `phase-${phase}`, dragged && 'is-dragging')}>
       <svg className="line-rope" width={width} height={ROPE_Y + sag + 12}>
         <path d={`M -4 ${ROPE_Y} Q ${width / 2} ${ROPE_Y + 2 * sag} ${width + 4} ${ROPE_Y}`} />
       </svg>
       <DndContext
         sensors={sensors}
-        collisionDetection={pointerWithin}
+        collisionDetection={preferSections}
         autoScroll={false}
         measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
         onDragStart={({ active }) => {
           markDragging(true)
-          setDragItem(all.find((i) => i.subtaskId === active.id) ?? null)
+          setDragged(active.data.current as Dragged)
         }}
         onDragCancel={() => {
           markDragging(false)
-          setDragItem(null)
+          setDragged(null)
         }}
         onDragEnd={({ active, over }) => {
           markDragging(false)
-          setDragItem(null)
+          setDragged(null)
           if (!over) return
-          const lane = String(over.id).slice(LANE.length) as Assignee
-          const item = all.find((i) => i.subtaskId === active.id)
-          if (!item || laneOfItem(item) === lane) return
-          setMoved({ ...moved, [item.subtaskId]: lane })
-          api.assignSubtask(item.subtaskId, lane)
-          setFlash({ key: lane || 'none', text: lane ? `→ 交给 ${AGENT_BY_ID[lane].name}` : '已取消分配', id: Date.now() })
+          const { taskId } = active.data.current as Dragged
+          const target = String(over.id)
+          if (target.startsWith(SECTION)) setTaskStatus(taskId, target.slice(SECTION.length) as Status)
+          else if (target === ACTIVE_ZONE) setTaskStatus(taskId, 'active')
         }}
       >
+        <ActiveZone />
         {hangers.map((h, i) => (
           <div
             key={h.key}
-            className="line-hanger"
+            className={cx('line-hanger', h.key !== 'note' && 'steady')}
             style={
               {
                 left: centers[i],
@@ -204,11 +249,24 @@ export function LineApp() {
           </div>
         ))}
         <DragOverlay dropAnimation={null}>
-          {dragItem ? <RowBody item={dragItem} lane={laneOfItem(dragItem)} slip /> : null}
+          {dragged ? (
+            <span className="line-slip" style={{ '--c': dragged.color } as CSSProperties}>
+              {dragged.title}
+            </span>
+          ) : null}
         </DragOverlay>
       </DndContext>
+      <Toast />
+      <CopyFlash />
+      <StatusMenuHost />
     </div>
   )
+}
+
+/** 整片绳子区域：从便签上拖下来的任务，放到这里就是开始做 */
+function ActiveZone() {
+  const { setNodeRef } = useDroppable({ id: ACTIVE_ZONE })
+  return <div ref={setNodeRef} className="line-active-zone" />
 }
 
 /** 晾衣夹 */
@@ -230,138 +288,171 @@ function Clip() {
   )
 }
 
-/** 最左边的牛皮纸小吊牌：一共多少在跑、在做、今天完成几个 */
-function Tag({ items, doneToday }: { items: ProcessItem[]; doneToday: number }) {
-  const running = items.filter((i) => i.status === 'ai_running').length
-  const doing = items.filter((i) => i.status === 'doing').length
-  return (
-    <div className="line-tag line-hit">
-      <span className="line-tag-hole" />
-      <div className="line-tag-title">进程</div>
-      <div className="line-tag-row">
-        <b>{running}</b>AI 在跑
-      </div>
-      <div className="line-tag-row">
-        <b>{doing}</b>我在做
-      </div>
-      <div className="line-tag-row">
-        <b>{doneToday}</b>今天完成
-      </div>
-    </div>
-  )
-}
-
-function LaneCard({
-  agent,
-  items,
+/** 最左边的便签：待办 / 已暂停 / 今天完成 的任务。每一栏都能把任务卡拖进来 */
+function Note({
+  noteOf,
   dragging,
-  copiedRow,
-  onCopy,
-  onOpen
+  pinned,
+  onOpen,
+  onStatus
 }: {
-  agent: Assignee
-  items: ProcessItem[]
+  noteOf: (s: Status) => NoteEntry[]
   dragging: boolean
-  copiedRow?: string
-  onCopy: (item: ProcessItem) => void
-  onOpen: (item: ProcessItem) => void
+  pinned: boolean
+  onOpen: (taskId: string) => void
+  onStatus: (taskId: string, status: Status) => void
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: LANE + agent })
-  const info = agent ? AGENT_BY_ID[agent] : null
-  const working = items.filter((i) => i.status === 'ai_running' || i.status === 'doing').length
-  const queued = items.filter((i) => i.status === 'todo').length
-  const busy = working > 0
-  const summary = !agent
-    ? `${items.length} 件没人领`
-    : [working && `${agent === 'me' ? '在做' : '在跑'} ${working}`, queued && `排队 ${queued}`].filter(Boolean).join(' · ') ||
-      '空着'
-  const extra = items.length - MAX_ROWS
-
+  const today = new Date()
   return (
-    <div
-      ref={setNodeRef}
-      className={cx('line-card', 'line-hit', isOver && 'over', agent && !busy && 'idle')}
-      style={{ '--agent': info?.color ?? 'var(--muted)' } as CSSProperties}
-    >
-      <header className="line-card-head">
-        <AgentIcon agent={agent} size={26} busy={busy} />
-        <div className="line-card-who">
-          <span className="line-card-name">{info ? info.name : '等人领'}</span>
-          <span className="line-card-sum">{isOver ? '松手交给 TA' : summary}</span>
-        </div>
-        {agent && !busy && !isOver && <span className="zzz">z z</span>}
-      </header>
-      {items.length > 0 ? (
-        <div className="line-rows">
-          {items.slice(0, MAX_ROWS).map((item) => (
-            <Row key={item.subtaskId} item={item} lane={agent} copied={copiedRow === item.subtaskId} onCopy={onCopy} onOpen={onOpen} />
-          ))}
-          {extra > 0 && <div className="line-more">还有 {extra} 件</div>}
-        </div>
-      ) : (
-        <div className="line-empty">{dragging ? '拖到这里交给 TA' : '没有活，拖一件过来'}</div>
-      )}
+    <div className={cx('line-note', 'line-hit', dragging && 'armed')}>
+      <div className="line-note-date">
+        {today.getMonth() + 1} 月 {today.getDate()} 日 · 周{'日一二三四五六'[today.getDay()]}
+        {pinned && (
+          <button className="line-note-pin" title="已固定：点一下取消固定（点别的软件会收起）" onClick={() => api.lineTogglePin()}>
+            📌
+          </button>
+        )}
+      </div>
+      {NOTE_SECTIONS.map(({ status, name }) => (
+        <NoteSection key={status} status={status} name={name} items={noteOf(status)} onOpen={onOpen} onStatus={onStatus} />
+      ))}
     </div>
   )
 }
 
-function Row({
-  item,
-  lane,
-  copied,
-  onCopy,
-  onOpen
+function NoteSection({
+  status,
+  name,
+  items,
+  onOpen,
+  onStatus
 }: {
-  item: ProcessItem
-  lane: Assignee
-  copied: boolean
-  onCopy: (item: ProcessItem) => void
-  onOpen: (item: ProcessItem) => void
+  status: Status
+  name: string
+  items: NoteEntry[]
+  onOpen: (taskId: string) => void
+  onStatus: (taskId: string, status: Status) => void
 }) {
-  const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({ id: item.subtaskId })
+  const { setNodeRef, isOver } = useDroppable({ id: SECTION + status })
+  const extra = items.length - NOTE_ROWS
+  return (
+    <section ref={setNodeRef} className={cx('line-note-section', `t-${status}`, isOver && 'over')}>
+      <header>
+        <StatusGlyph status={status} />
+        {name}
+        <b>{items.length}</b>
+      </header>
+      {isOver && <p className="line-note-hint">松手改成{STATUS_LABEL[status]}</p>}
+      {items.slice(0, NOTE_ROWS).map((e) => (
+        <NoteItem key={e.id} entry={e} onOpen={onOpen} onStatus={onStatus} />
+      ))}
+      {extra > 0 && <p className="line-note-more">还有 {extra} 个</p>}
+    </section>
+  )
+}
+
+function NoteItem({
+  entry,
+  onOpen,
+  onStatus
+}: {
+  entry: NoteEntry
+  onOpen: (taskId: string) => void
+  onStatus: (taskId: string, status: Status) => void
+}) {
+  const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({
+    id: `note:${entry.id}`,
+    data: { taskId: entry.id, title: entry.title, color: entry.color } satisfies Dragged
+  })
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      className={cx('line-row-slot', dragging && 'placeholder', copied && 'copied')}
-      title={item.promptExpanded ? '点一下复制提示词 · 双击打开任务 · 按住拖给别人' : '还没写提示词，点一下复制标题 · 双击打开任务'}
-      onClick={(e) => {
-        if (isDragging() || e.detail > 1) return
-        onCopy(item)
+      className={cx('line-note-item', dragging && 'placeholder')}
+      style={{ '--c': entry.color } as CSSProperties}
+      title={`${entry.projectTitle} · ${entry.title}\n点一下打开 · 拖到绳子上开始做 · 右击改状态`}
+      onClick={() => {
+        if (!isDragging()) onOpen(entry.id)
       }}
-      onDoubleClick={() => onOpen(item)}
+      onContextMenu={(e) =>
+        openStatusMenu(e, {
+          title: entry.title,
+          value: entry.status,
+          onChange: (s) => onStatus(entry.id, s),
+          actions: [{ label: '在侧边栏打开', onClick: () => onOpen(entry.id) }]
+        })
+      }
     >
-      <RowBody item={item} lane={lane} />
+      <i />
+      {entry.title}
     </div>
   )
 }
 
-function RowBody({ item, lane, slip }: { item: ProcessItem; lane: Assignee; slip?: boolean }) {
-  const status = item.waitingFor
-    ? `等 S${item.waitingFor}`
-    : item.status === 'todo'
-      ? lane
-        ? '排队'
-        : '待领'
-      : item.status === 'ai_running'
-        ? '在跑'
-        : STATUS_LABEL[item.status]
+/**
+ * 一个进行中的任务。顶上一条：项目、在侧边栏打开、状态（按住这一条可以拖到便签上）；
+ * 下面是进度条和侧边栏同款的任务正文（紧凑版），内容多了在卡片里滚动。
+ */
+function TaskCard({
+  detail,
+  onOpen,
+  onStatus
+}: {
+  detail: TaskDetail
+  onOpen: (taskId: string) => void
+  onStatus: (taskId: string, status: Status) => void
+}) {
+  const { task, project, subtasks } = detail
+  const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({
+    id: `task:${task.id}`,
+    data: { taskId: task.id, title: task.title, color: project.color } satisfies Dragged
+  })
+
   return (
-    <div className={cx('line-row', `s-${item.status}`, item.waitingFor != null && 'waiting', slip && 'slip')} style={{ '--c': item.color } as CSSProperties}>
-      <span className="line-row-bar" />
-      <div className="line-row-main">
-        <div className="line-row-title">
-          <b>S{item.ref}</b>
-          {item.title}
-        </div>
-        <div className="line-row-crumb">{item.taskTitle}</div>
+    <div
+      ref={setNodeRef}
+      className={cx('line-card', 'line-task', 'line-hit', dragging && 'placeholder')}
+      style={{ '--c': project.color } as CSSProperties}
+      // 右击卡片空白处 / 标题：改整个任务的状态；右击子任务那一行改子任务（那边自己处理）
+      onContextMenu={(e) =>
+        openStatusMenu(e, {
+          title: task.title,
+          value: task.status,
+          onChange: (s) => onStatus(task.id, s),
+          actions: [{ label: '在侧边栏打开', onClick: () => onOpen(task.id) }]
+        })
+      }
+    >
+      <header className="line-task-head" {...attributes} {...listeners} title="按住这一条，拖到便签上可以改状态">
+        <span className="line-task-project">
+          <i />
+          {project.title}
+        </span>
+        <button
+          className="line-task-open"
+          title="在侧边栏打开"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => onOpen(task.id)}
+        >
+          <Icon.expand />
+        </button>
+        <TaskStatusPicker taskId={task.id} value={task.status} />
+      </header>
+      <Track statuses={subtasks.map((s) => s.status)} />
+      <div className="line-task-scroll">
+        <TaskBody detail={detail} compact />
       </div>
-      <span className="line-row-status">
-        <i />
-        {status}
-      </span>
-      <span className="line-row-copy">{item.promptExpanded ? '复制' : '复制标题'}</span>
+    </div>
+  )
+}
+
+/** 没有进行中的任务时挂一张空卡片 */
+function EmptyCard({ dragging }: { dragging: boolean }) {
+  return (
+    <div className="line-card line-task line-hit idle">
+      <div className="line-task-title">没有进行中的任务</div>
+      <div className="line-empty">{dragging ? '松手开始做这个任务' : '从左边便签上拖一个任务到绳子上，就开始做'}</div>
     </div>
   )
 }

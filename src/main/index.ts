@@ -91,17 +91,15 @@ function notify(title: string, body: string): void {
 
 function refreshTray(): void {
   if (!tray) return
-  const board = db.processBoard()
-  const all = [...board.unassigned, ...Object.values(board.lanes).flat()]
-  const running = all.filter((i) => i.status === 'ai_running')
-  tray.setToolTip(`Baton · ${running.length} 个 AI 在跑`)
+  const running = db.processBoard().columns.active
+  tray.setToolTip(`Baton · ${running.length} 个进行中`)
 
-  const item = (i: (typeof all)[number]): Electron.MenuItemConstructorOptions => ({
+  const item = (i: (typeof running)[number]): Electron.MenuItemConstructorOptions => ({
     label: `  S${i.ref} ${i.title} · ${i.taskTitle}`,
     click: () => dock.setDockOpen(true, { focus: true, taskId: i.taskId })
   })
   const items: Electron.MenuItemConstructorOptions[] = [
-    { label: running.length ? `AI 在跑（${running.length}）` : '没有 AI 在跑', enabled: false },
+    { label: running.length ? `进行中（${running.length}）` : '没有进行中的子任务', enabled: false },
     ...running.slice(0, 10).map(item),
     { type: 'separator' },
     { label: '显示侧边栏', accelerator: settings.SHORTCUTS.dock, click: () => dock.setDockOpen(true, { focus: true }) },
@@ -163,6 +161,7 @@ const handlers: Handlers = {
 
   processBoard: db.processBoard,
   calendar: db.calendar,
+  lineBoard: db.lineBoard,
   assignSubtask: db.assignSubtask,
 
   getSettings: () => ({
@@ -178,7 +177,8 @@ const handlers: Handlers = {
   showDataDir: () => shell.showItemInFolder(join(app.getPath('userData'), 'baton.db')),
 
   dockOpen: (opts) => {
-    line.setLineOpen(false)
+    // 固定住的晾衣绳不收，和侧边栏一起挂着
+    line.closeLine()
     dock.setDockOpen(true, opts)
   },
   dockClose: (opts) => {
@@ -188,11 +188,12 @@ const handlers: Handlers = {
   getDockState: dock.getDockState,
   setDockPinned: dock.setPinned,
   setDockSide: dock.setSide,
-  setDockHoverOpen: dock.setHoverOpen,
   moveHandle: dock.moveHandle,
   lineToggle: line.toggleLine,
+  lineTogglePin: line.togglePin,
+  lineState: line.lineState,
   lineOpen: () => line.setLineOpen(true),
-  lineClose: () => line.setLineOpen(false),
+  lineClose: line.closeLine,
   lineClosed: line.finishLineClose,
   lineInteractive: line.setLineInteractive,
   claudeCodeStatus,

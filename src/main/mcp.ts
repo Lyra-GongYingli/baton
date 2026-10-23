@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
 import { AGENT_BY_ID } from '../shared/agents'
-import { STATUS_LABEL, TASK_STATUS_LABEL, type Assignee, type TaskDetail } from '../shared/types'
+import { STATUS_LABEL, type Assignee, type Status, type TaskDetail } from '../shared/types'
 import * as db from './db'
 
 // 让 Claude Code 等 AI 工具直接操控 Baton：在本机开一个 MCP 服务（Streamable HTTP）。
@@ -23,19 +23,17 @@ export function mcpState(): { running: boolean; error: string | null } {
 const INSTRUCTIONS = `Baton 是用户的任务接力工具，用来管理同时进行的多件事和给 AI 的提示词。
 结构：项目 → 任务 → 子任务（S1、S2…，可以分给 claude / codex / muse / me）→ 子子任务（子任务下面的清单项）。每一层都可以有提示词 prompt。
 子任务分两种：接力（chained=true，上一个完成后才轮到它）和独立。
+任务、子任务、子子任务共用一套状态，只表达进度：todo 待办 / active 进行中 / paused 已暂停 / done 已完成。谁在做记在 agent 上，和状态无关。
 常用流程：
 - 先用 list_projects 或 search 找到 id，再用 get_task 看细节。
 - 用户让你「记到 Baton / 加个任务 / 拆一下」时，用 create_task、add_subtasks。
-- 你开始做某个子任务时，用 update_subtask 把 agent 设成你自己、status 设成 ai_running；做完设成 done。
+- 你开始做某个子任务或子子任务时，用 update_subtask 把 status 设成 active（子任务顺便把 agent 设成你自己）；做完设成 done。
 - 子任务可以安排在某一天做（scheduled_on，YYYY-MM-DD），用户在 Baton 的月历里看。用 calendar 查某段日子安排了什么。
-- 任务状态会跟着子任务进度自动变化，一般不用手动改。`
+- 上一层的状态会跟着下一层自动变化（任务跟子任务，子任务跟子子任务），一般不用手动改；把某一层标成 done 会连带下面的全部完成。`
 
-const subtaskStatus = z
-  .enum(['todo', 'doing', 'ai_running', 'done'])
-  .describe('todo=待办，doing=用户自己在做，ai_running=AI 在跑，done=完成。子子任务只用 todo / done')
-const taskStatus = z
+const status = z
   .enum(['todo', 'active', 'paused', 'done'])
-  .describe('todo=待办，active=进行中，paused=已暂停，done=已完成（会把下面的子任务全部打勾）')
+  .describe('todo=待办，active=进行中，paused=已暂停，done=已完成（会把下面的全部标成完成）')
 const agent = z
   .enum(['claude', 'codex', 'muse', 'me', 'none'])
   .describe('谁来做：claude / codex / muse 是 AI，me 是用户自己，none 是还没分配')
@@ -49,7 +47,7 @@ function taskView(d: TaskDetail) {
     project_id: d.project.id,
     project: d.project.title,
     title: d.task.title,
-    status: `${d.task.status}（${TASK_STATUS_LABEL[d.task.status]}）`,
+    status: `${d.task.status}（${STATUS_LABEL[d.task.status]}）`,
     goal: d.task.goal,
     prompt: d.task.prompt,
     subtasks: d.subtasks.map((s) => ({
@@ -65,7 +63,7 @@ function taskView(d: TaskDetail) {
         subtask_id: c.id,
         label: `S${s.ref}.${i + 1}`,
         title: c.title,
-        done: c.status === 'done',
+        status: `${c.status}（${STATUS_LABEL[c.status]}）`,
         prompt: c.prompt
       }))
     }))
@@ -110,7 +108,7 @@ function buildServer(onChange: (summary: string) => void): McpServer {
           tasks: tasks.map((t) => ({
             task_id: t.id,
             title: t.title,
-            status: `${t.status}（${TASK_STATUS_LABEL[t.status]}）`,
+            status: `${t.status}（${STATUS_LABEL[t.status]}）`,
             progress: `${t.subtaskDone}/${t.subtaskTotal}`,
             current: t.current
               ? `S${t.current.ref} ${t.current.title}（${STATUS_LABEL[t.current.status]}，${agentName(t.current.agent)}）`
@@ -178,23 +176,24 @@ function buildServer(onChange: (summary: string) => void): McpServer {
     'process_board',
     {
       title: '查看进程',
-      description: '看现在谁在做什么：每个执行者（claude / codex / muse / me）手上的子任务，以及还没分配的。',
+      description: '按状态看所有在推进的子任务：进行中、待办、已暂停，以及今天完成的。每项带执行者。',
       annotations: { readOnlyHint: true }
     },
     tool(() => {
       const board = db.processBoard()
-      const item = (i: (typeof board.unassigned)[number]) => ({
+      const item = (i: (typeof board.columns.todo)[number]) => ({
         subtask_id: i.subtaskId,
         task_id: i.taskId,
         path: `${i.projectTitle} / ${i.taskTitle} / S${i.ref}`,
         title: i.title,
-        status: `${i.status}（${STATUS_LABEL[i.status]}）`,
+        agent: i.agent || 'none',
         waiting_for: i.waitingFor ? `S${i.waitingFor}` : null
       })
       return ok({
-        lanes: Object.fromEntries(Object.entries(board.lanes).map(([k, items]) => [k, items.map(item)])),
-        unassigned: board.unassigned.map(item),
-        done_today: board.doneToday
+        active: board.columns.active.map(item),
+        todo: board.columns.todo.map(item),
+        paused: board.columns.paused.map(item),
+        done_today: board.columns.done.map(item)
       })
     })
   )
@@ -279,7 +278,7 @@ function buildServer(onChange: (summary: string) => void): McpServer {
         title: z.string().optional(),
         goal: z.string().optional(),
         prompt: z.string().optional(),
-        status: taskStatus.optional()
+        status: status.optional()
       }
     },
     tool(
@@ -345,12 +344,12 @@ function buildServer(onChange: (summary: string) => void): McpServer {
       title: '修改子任务',
       description:
         '修改子任务或子子任务：标题、提示词、状态、执行者、是否接力、安排在哪天做。' +
-        '只改 agent 不改 status 时，状态会顺势变化（交给 AI → ai_running，交给 me → doing）。',
+        '换执行者不会改状态。子子任务只能改标题、提示词、状态。',
       inputSchema: {
         subtask_id: z.string(),
         title: z.string().optional(),
         prompt: z.string().optional(),
-        status: subtaskStatus.optional(),
+        status: status.optional(),
         agent: agent.optional(),
         chained: z.boolean().optional(),
         scheduled_on: z
@@ -365,26 +364,21 @@ function buildServer(onChange: (summary: string) => void): McpServer {
         subtask_id: string
         title?: string
         prompt?: string
-        status?: 'todo' | 'doing' | 'ai_running' | 'done'
+        status?: Status
         agent?: z.infer<typeof agent>
         chained?: boolean
         scheduled_on?: string
       }) => {
         const info = db.subtaskInfo(args.subtask_id)
         if (!info) throw new Error(`找不到子任务 ${args.subtask_id}`)
-        const isChild = Boolean(info.parentId)
-        if (isChild && args.status && args.status !== 'todo' && args.status !== 'done') {
-          throw new Error('子子任务只有 todo / done 两种状态')
-        }
-        if (isChild && (args.agent || args.chained !== undefined || args.scheduled_on)) {
+        if (info.parentId && (args.agent || args.chained !== undefined || args.scheduled_on)) {
           throw new Error('子子任务不能分配执行者、不能设接力，也不能排日子')
         }
-        if (args.agent && !args.status) db.assignSubtask(args.subtask_id, toAssignee(args.agent))
         db.updateSubtask(args.subtask_id, {
           title: args.title,
           prompt: args.prompt,
           status: args.status,
-          agent: args.agent && args.status ? toAssignee(args.agent) : undefined,
+          agent: args.agent ? toAssignee(args.agent) : undefined,
           chained: args.chained,
           scheduledOn: args.scheduled_on
         })

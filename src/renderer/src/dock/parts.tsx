@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { SubtaskStatus } from '../../../shared/types'
+import type { Status } from '../../../shared/types'
 import { api } from '../api'
 import { cx } from '../util'
 
@@ -169,7 +169,7 @@ export function PromptPill({ text, label }: { text: string; label?: string }) {
 
 // ---------- 接力跑道：每段是一个子任务 ----------
 
-export function Track({ statuses }: { statuses: SubtaskStatus[] }) {
+export function Track({ statuses }: { statuses: Status[] }) {
   if (statuses.length === 0) return <div className="track empty" />
   return (
     <div className="track">

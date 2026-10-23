@@ -1,23 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
-import type { DockState } from '../../../shared/types'
+import type { DockState, LineState } from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
+import { useDelayedClick } from '../components/Copy'
 import { cx, titleFromText } from '../util'
 import { Icon, useDropTarget } from './parts'
 
-/** 贴在屏幕边上的小把手：碰一下展开侧边栏，也可以把东西直接扔上来。上面的小圆钮放下晾衣绳（进程） */
+/**
+ * 贴在屏幕边上的小把手：点一下展开侧边栏，也可以把东西直接扔上来。
+ * 上面的小圆钮放下晾衣绳（进程）：单击放下 / 收起，双击固定住。
+ */
 export function Handle() {
   const [trees] = useData(() => api.listProjects(), [])
   const [state, setState] = useState<DockState>()
-  const [lineOpen, setLineOpen] = useState(false)
+  const [line, setLine] = useState<LineState>({ open: false, pinned: false })
   const [saved, setSaved] = useState(false)
-  const hoverTimer = useRef(0)
+  // 单击要等一下，确认不是双击（双击 = 固定）
+  const lineClick = useDelayedClick(() => api.lineToggle())
   const springTimer = useRef(0)
   const drag = useRef<{ startY: number; moved: boolean } | null>(null)
 
   useEffect(() => {
     api.getDockState().then(setState)
     const offDock = onMainEvent('dock-state', (s) => setState(s as DockState))
-    const offLine = onMainEvent('line-state', (s) => setLineOpen((s as { open: boolean }).open))
+    api.lineState().then(setLine)
+    const offLine = onMainEvent('line-state', (s) => setLine(s as LineState))
     return () => {
       offDock()
       offLine()
@@ -40,26 +46,33 @@ export function Handle() {
     setTimeout(() => setSaved(false), 1300)
   })
 
-  const open = (hover: boolean): void => {
-    clearTimeout(hoverTimer.current)
-    api.dockOpen({ hover })
+  // 点开的拿到焦点（点别处、按 Esc 收起）；拖着东西停留弹开的只是「探出来」，鼠标没进去会自己收回
+  const open = (peek: boolean): void => {
+    api.dockOpen(peek ? { peek } : { focus: true })
   }
 
   return (
     <div className={cx('handle', `side-${state?.side ?? 'right'}`, drop.over && 'drop-over', saved && 'saved')}>
       <button
-        className={cx('handle-line-btn', lineOpen && 'on')}
-        title={lineOpen ? '收起晾衣绳' : '晾出进程：在屏幕顶上看谁在做什么'}
-        onClick={() => api.lineToggle()}
+        className={cx('handle-line-btn', line.open && 'on', line.pinned && 'pinned')}
+        title={
+          line.pinned
+            ? '晾衣绳已固定。单击收起，双击取消固定'
+            : line.open
+              ? '单击收起晾衣绳，双击固定住'
+              : '晾出进程：单击放下，双击固定住（点别的软件也不收）'
+        }
+        onClick={lineClick.onClick}
+        onDoubleClick={() => {
+          lineClick.cancel()
+          api.lineTogglePin()
+        }}
       >
         <Icon.line />
+        {line.pinned && <span className="handle-line-pin" />}
       </button>
       <div
         className="handle-pill"
-        onMouseEnter={() => {
-          if (state?.hoverOpen) hoverTimer.current = window.setTimeout(() => open(true), 140)
-        }}
-        onMouseLeave={() => clearTimeout(hoverTimer.current)}
         onClick={() => {
           if (!drag.current?.moved) open(false)
         }}
@@ -80,7 +93,7 @@ export function Handle() {
           {active.slice(0, 7).map((t) => (
             <span
               key={t.id}
-              className={cx('handle-dot', t.statuses.includes('ai_running') && 'running')}
+              className={cx('handle-dot', t.statuses.includes('active') && 'running')}
               style={{ background: t.color }}
             />
           ))}

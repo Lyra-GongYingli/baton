@@ -11,8 +11,8 @@ body.route-line {
   --line-ring-edge: rgba(0, 0, 0, 0.07);
   --line-rope: rgba(70, 70, 74, 0.62);
   --line-rope-hi: rgba(255, 255, 255, 0.75);
-  --kraft: #e9d6ae;
-  --kraft-ink: #5d4523;
+  --note: #fde68a;
+  --note-ink: #5c4510;
   position: fixed;
   inset: 0;
   font-family: var(--font);
@@ -24,8 +24,8 @@ body.route-line {
     --line-ring-edge: rgba(255, 255, 255, 0.07);
     --line-rope: rgba(214, 214, 220, 0.62);
     --line-rope-hi: rgba(0, 0, 0, 0.55);
-    --kraft: #cdb487;
-    --kraft-ink: #3f2d12;
+    --note: #e3c463;
+    --note-ink: #3a2b06;
   }
 }
 
@@ -74,6 +74,13 @@ body.route-line {
 .phase-out .line-swing {
   animation: line-lift 0.5s calc(var(--i) * 35ms) cubic-bezier(0.55, 0, 0.8, 0.2) both;
 }
+/* 任务卡片里要打字、拖动，挂稳了别晃：只有便签跟着风轻轻摆、碰到时晃一下 */
+.phase-in .line-hanger.steady .line-swing {
+  animation: line-drop 1.25s calc(0.12s + var(--i) * 75ms) cubic-bezier(0.25, 0.8, 0.3, 1) both;
+}
+.line-hanger.steady .line-wiggle:hover {
+  animation: none;
+}
 .line-wiggle {
   transform-origin: 50% 0;
 }
@@ -100,12 +107,19 @@ body.route-line {
   filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.22));
 }
 
-/* ---------- 执行者卡片 ---------- */
+/* ---------- 进行中的任务卡片 ---------- */
+
+/* 整片绳子区域：从便签上拖下来的任务放这里 = 开始做 */
+.line-active-zone {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
 
 .line-card {
   position: relative;
   margin-top: 19px;
-  padding: 12px 10px 8px;
+  padding: 12px 12px 9px;
   border-radius: 18px;
   background: var(--card);
   border: 1px solid var(--card-border);
@@ -116,223 +130,243 @@ body.route-line {
     0 6px 12px -6px rgba(0, 0, 0, 0.18);
   transition:
     transform 0.3s var(--spring),
-    box-shadow 0.2s;
-}
-.line-card.over {
-  transform: scale(1.04);
-  box-shadow:
-    0 0 0 5px var(--agent),
-    0 24px 40px -14px rgba(0, 0, 0, 0.5);
+    box-shadow 0.2s,
+    opacity 0.2s;
 }
 .line-card.idle {
-  opacity: 0.88;
+  opacity: 0.9;
+}
+.line-card.placeholder {
+  opacity: 0.35;
 }
 
-.line-card-head {
+.line-task-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 2px 8px;
+  gap: 6px;
+  margin-bottom: 4px;
+  cursor: grab;
+  touch-action: none;
 }
-.line-card-who {
-  display: flex;
-  flex-direction: column;
+.line-task-project {
+  flex: 1;
   min-width: 0;
-  line-height: 1.25;
-}
-.line-card-name {
-  font-family: var(--font-display);
-  font-size: 14px;
-  font-weight: 800;
-}
-.line-card-sum {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
+  font-weight: 700;
   color: var(--muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.line-card.over .line-card-sum {
-  color: var(--agent);
-  font-weight: 700;
+.line-task-project i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--c);
+}
+.line-task-open {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--muted);
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+.line-task-open:hover {
+  color: var(--accent);
+  background: var(--hover);
+}
+.line-task-open svg {
+  width: 13px;
+  height: 13px;
+}
+.line-task > .track {
+  margin: 2px 0 8px;
+  height: 4px;
+}
+/* 内容多了在卡片里滚动，绳子窗口有多高就用多高 */
+.line-task-scroll {
+  max-height: 400px;
+  margin: 0 -6px;
+  padding: 0 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.line-task-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.line-task-scroll::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: var(--border-strong);
 }
 
-.line-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+/* 没有进行中的任务时的空卡片 */
+.line-task-title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 800;
 }
-.line-more,
 .line-empty {
-  padding: 4px 4px 2px;
+  margin-top: 8px;
+  padding: 10px 8px;
   font-size: 11px;
   color: var(--muted);
-}
-.line-empty {
-  padding: 6px 4px 6px;
   text-align: center;
   border: 1.5px dashed var(--border-strong);
   border-radius: 10px;
 }
-.line-card.over .line-empty {
-  border-color: var(--agent);
-  color: var(--agent);
+.is-dragging .line-empty {
+  border-color: var(--c-active);
+  color: var(--c-active);
 }
 
-/* ---------- 一行 = 一个子任务 ---------- */
-
-.line-row-slot {
+/* 拖着走的小纸条 */
+.line-slip {
+  display: inline-block;
+  max-width: 200px;
+  padding: 6px 12px 6px 10px;
   border-radius: 10px;
-  cursor: pointer;
-  touch-action: none;
-}
-.line-row-slot.placeholder {
-  opacity: 0.3;
-}
-.line-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 6px 5px 4px;
-  border-radius: 10px;
-  transition: background 0.15s;
-}
-.line-row-slot:hover .line-row {
-  background: var(--hover);
-}
-.line-row-slot.copied .line-row {
-  animation: line-row-copied 0.8s ease-out;
-}
-.line-row-bar {
-  width: 4px;
-  align-self: stretch;
-  border-radius: 2px;
-  background: var(--c);
-}
-.line-row-main {
-  flex: 1;
-  min-width: 0;
-}
-.line-row-title,
-.line-row-crumb {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.line-row-title {
-  font-size: 12.5px;
-  font-weight: 700;
-}
-.line-row-title b {
-  margin-right: 4px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--muted);
-}
-.line-row-crumb {
-  font-size: 11px;
-  color: var(--muted);
-}
-.line-row-status,
-.line-row-copy {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10.5px;
-  font-weight: 700;
-  white-space: nowrap;
-  color: var(--muted);
-}
-.line-row-status i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.line-row.s-ai_running .line-row-status {
-  color: var(--c-ai_running);
-}
-.line-row.s-ai_running .line-row-status i {
-  animation: pulse 1.1s ease-in-out infinite;
-}
-.line-row.s-doing .line-row-status {
-  color: var(--c-doing);
-}
-.line-row.waiting .line-row-status {
-  color: var(--muted);
-}
-.line-row-copy {
-  display: none;
-  color: var(--accent);
-}
-.line-row-slot:hover .line-row-status {
-  display: none;
-}
-.line-row-slot:hover .line-row-copy {
-  display: flex;
-}
-
-/* 拖起来的那一行：像从卡片上撕下来的小纸条 */
-.line-row.slip {
-  width: 196px;
+  border-left: 4px solid var(--c);
   background: var(--card);
-  border: 1px solid var(--card-border);
-  box-shadow: 0 16px 28px -10px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 14px 28px -10px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transform: rotate(-3deg);
   cursor: grabbing;
 }
-.line-row.slip .line-row-copy {
-  display: none;
-}
 
-/* ---------- 牛皮纸吊牌 ---------- */
+/* ---------- 便签：待办 / 已暂停 / 今天完成 ---------- */
 
-.line-tag {
+.line-note {
   position: relative;
-  margin-top: 19px;
-  padding: 18px 12px 12px;
-  background: var(--kraft);
-  color: var(--kraft-ink);
-  clip-path: polygon(16px 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%, 0 16px);
-  border-radius: 0 0 10px 10px;
+  margin-top: 16px;
+  padding: 16px 12px 12px;
+  background: var(--note);
+  color: var(--note-ink);
+  border-radius: 3px 3px 14px 3px;
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.05),
+    0 18px 26px -14px rgba(0, 0, 0, 0.45);
+  transform: rotate(-1.2deg);
 }
-.line-scale:has(.line-tag) {
-  filter: drop-shadow(0 14px 14px rgba(0, 0, 0, 0.28));
-}
-.line-tag-hole {
+/* 右下角翘起来一点 */
+.line-note::after {
+  content: '';
   position: absolute;
-  left: 50%;
-  top: 7px;
-  width: 8px;
-  height: 8px;
-  margin-left: -4px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.25);
-  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.3);
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 0 0 14px 0;
+  background: linear-gradient(135deg, transparent 50%, rgba(0, 0, 0, 0.1) 50%);
 }
-.line-tag-title {
+.line-note-date {
+  position: relative;
   margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--note-ink) 35%, transparent);
   font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 900;
-  letter-spacing: 2px;
+  font-size: 13px;
+  font-weight: 800;
   text-align: center;
-  border-bottom: 1px dashed rgba(93, 69, 35, 0.45);
-  padding-bottom: 5px;
 }
-.line-tag-row {
+.line-note-pin {
+  position: absolute;
+  right: -4px;
+  top: -6px;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px;
+  border-radius: 6px;
+  transition: transform 0.2s var(--spring);
+}
+.line-note-pin:hover {
+  transform: rotate(-20deg) scale(1.2);
+}
+.line-note-section {
+  margin: 0 -6px;
+  padding: 4px 6px 5px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.line-note.armed .line-note-section {
+  outline: 1.5px dashed color-mix(in srgb, var(--note-ink) 30%, transparent);
+  outline-offset: -2px;
+}
+.line-note-section.over {
+  background: rgba(255, 255, 255, 0.55);
+  outline-color: var(--tc) !important;
+  outline-style: solid !important;
+}
+.line-note-section header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.7;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 800;
 }
-.line-tag-row b {
-  min-width: 18px;
+.line-note-section header .status-glyph {
+  --tc: var(--note-ink);
+}
+.line-note-section.t-done header .status-glyph {
+  --tc: var(--c-done);
+}
+.line-note-section header b {
+  margin-left: auto;
   font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 900;
-  text-align: right;
+  font-size: 14px;
+}
+.line-note-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 13px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  touch-action: none;
+}
+.line-note-item:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+.line-note-item.placeholder {
+  opacity: 0.3;
+}
+.line-note-item i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--c);
+}
+.line-note-section.t-done .line-note-item {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--note-ink) 45%, transparent);
+}
+.line-note-more,
+.line-note-hint {
+  margin: 1px 0 0 13px;
+  font-size: 10.5px;
+  opacity: 0.7;
+}
+.line-note-hint {
+  font-weight: 700;
+  opacity: 1;
 }
 
 /* ---------- 「✓ 已复制」：挂在卡片下面 ---------- */

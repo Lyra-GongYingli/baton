@@ -4,7 +4,7 @@ import { api, useData } from '../api'
 import { SubtaskRoute } from '../board/SubtaskRoute'
 import { Editable } from '../components/Editable'
 import { PromptBox } from '../components/PromptBox'
-import { TaskStatusPicker } from '../components/TaskStatusPicker'
+import { TaskStatusPicker } from '../components/StatusPicker'
 
 /** 大窗口里的任务：所有字段都能编辑 */
 export function TaskView({ id, onDeleted }: { id: string; onDeleted: () => void }) {

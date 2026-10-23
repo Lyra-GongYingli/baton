@@ -22,7 +22,7 @@ export interface Deps {
 let panel: BrowserWindow | null = null
 let handle: BrowserWindow | null = null
 let open = false
-let openedByHover = false
+let peek = false
 let hideTimer: NodeJS.Timeout | null = null
 let dragStartY = 0
 
@@ -110,7 +110,7 @@ export function relayout(): void {
 
 export function getDockState(): DockState {
   const d = settings.getDock()
-  return { open, pinned: d.pinned, side: d.side, hoverOpen: d.hoverOpen, openedByHover }
+  return { open, pinned: d.pinned, side: d.side, peek }
 }
 
 function broadcastState(): void {
@@ -124,7 +124,7 @@ export function isDockOpen(): boolean {
 
 export function setDockOpen(
   next: boolean,
-  opts: { focus?: boolean; taskId?: string; hover?: boolean } = {}
+  opts: { focus?: boolean; taskId?: string; peek?: boolean } = {}
 ): void {
   if (!panel || !handle) return
   if (hideTimer) {
@@ -134,7 +134,7 @@ export function setDockOpen(
   if (next) {
     const wasOpen = open
     open = true
-    openedByHover = !wasOpen && Boolean(opts.hover)
+    peek = !wasOpen && Boolean(opts.peek)
     if (!wasOpen) panel.setBounds(panelBounds())
     if (opts.focus) {
       panel.show()
@@ -176,11 +176,6 @@ export function setPinned(pinned: boolean): void {
 export function setSide(next: DockSide): void {
   settings.setDockSide(next)
   relayout()
-}
-
-export function setHoverOpen(hoverOpen: boolean): void {
-  settings.setDock({ hoverOpen })
-  broadcastState()
 }
 
 /** 上下拖动把手，松手后记住位置 */

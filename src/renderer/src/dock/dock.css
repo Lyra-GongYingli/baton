@@ -69,8 +69,10 @@ body.route-handle {
   background-image: radial-gradient(var(--panel-dots) 1.1px, transparent 1.2px);
   background-size: 14px 14px;
   border: 1px solid var(--card-border);
+  /* 窗口四周只留了 --dock-margin（14px）透明边，阴影不能超出去，否则会在屏幕上被切出一道硬边 */
   box-shadow:
-    0 10px 28px -8px rgba(0, 0, 0, 0.3),
+    0 0 8px rgba(0, 0, 0, 0.08),
+    0 6px 12px -6px rgba(0, 0, 0, 0.28),
     0 0 0 0.5px rgba(0, 0, 0, 0.1);
   opacity: 0;
   transition:
@@ -175,7 +177,7 @@ body.route-handle {
 
 /* ---------- 等你拍板 ---------- */
 
-/* ---------- AI 正在跑 ---------- */
+/* ---------- 进行中的提示条 ---------- */
 
 .typing i {
   display: inline-block;
@@ -324,26 +326,16 @@ body.route-handle {
 
 /* 状态小标签 */
 .now-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   font-weight: 650;
   padding: 1px 7px;
   border-radius: 999px;
   white-space: nowrap;
-  color: var(--text-2);
-  background: var(--hover);
-}
-.now-status.s-doing {
-  color: var(--c-doing);
-  background: color-mix(in srgb, var(--c-doing) 13%, transparent);
-}
-.now-status.s-ai_running {
-  color: var(--c-ai_running);
-  background: color-mix(in srgb, var(--c-ai_running) 13%, transparent);
-}
-
-.now-status.s-done {
-  color: var(--c-done);
-  background: color-mix(in srgb, var(--c-done) 13%, transparent);
+  color: var(--tc, var(--text-2));
+  background: color-mix(in srgb, var(--tc, var(--muted)) 13%, transparent);
 }
 
 /* ---------- 接力跑道 ---------- */
@@ -366,14 +358,12 @@ body.route-handle {
 .seg.s-done {
   background: var(--c);
 }
-.seg.s-doing {
+.seg.s-active {
   background: color-mix(in srgb, var(--c) 50%, transparent);
   animation: soft-blink 1.6s ease-in-out infinite;
 }
-.seg.s-ai_running {
-  background: repeating-linear-gradient(-45deg, #7c5cff 0 5px, #b6a6ff 5px 10px);
-  background-size: 14.14px 14.14px;
-  animation: stripes 0.7s linear infinite;
+.seg.s-paused {
+  background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--c-paused) 55%, transparent) 0 3px, transparent 3px 6px);
 }
 
 /* ---------- 提示词胶囊 ---------- */
@@ -666,26 +656,22 @@ button.stop-node:active {
 .stop.solo .node-core {
   border-radius: 3px;
 }
-.s-doing .stop-node {
-  border-color: var(--c);
+.s-active .stop-node {
+  border-color: var(--c-active);
 }
-.s-doing .node-core {
-  background: var(--c);
+.s-active .node-core {
+  background: var(--c-active);
   animation:
     node-pop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.6),
     pulse 1.6s ease-in-out 0.45s infinite;
 }
-.s-ai_running .stop-node {
-  border-color: transparent;
-  background:
-    radial-gradient(circle, var(--card) 0 52%, transparent 54%),
-    conic-gradient(#7c5cff, #d05cff, rgba(124, 92, 255, 0.1) 70%, #7c5cff);
-  animation: spin 1.3s linear infinite;
+.s-paused .stop-node {
+  border-color: var(--c-paused);
 }
-.s-ai_running .node-core {
-  background: #7c5cff;
-  width: 7px;
-  height: 7px;
+.s-paused .node-core {
+  width: 8px;
+  border-radius: 0;
+  background: linear-gradient(90deg, var(--c-paused) 0 3px, transparent 3px 5px, var(--c-paused) 5px 8px);
 }
 
 .s-done .stop-node {
@@ -753,7 +739,7 @@ button.stop-node:active {
 }
 .carry.waiting,
 .waiting {
-  color: var(--c-review);
+  color: var(--c-paused);
   font-weight: 650;
 }
 
@@ -846,10 +832,25 @@ button.stop-node:active {
   transform: scale(1.14);
   color: var(--accent);
 }
+.handle-line-btn {
+  position: relative;
+}
 .handle-line-btn.on {
   background: var(--accent);
   border-color: transparent;
   color: #fff;
+}
+/* 固定住了：右上角一颗小图钉 */
+.handle-line-pin {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f5b40b;
+  border: 1.5px solid var(--handle-bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 /* 晾衣绳图标：鼠标碰到按钮时三张小卡片挨个晃一下 */
 .mini-card {
@@ -1322,7 +1323,7 @@ button:hover .mini-card.c {
   border-radius: 14px;
   background: var(--card);
   border: 1px solid var(--card-border);
-  border-top: 3px solid var(--agent);
+  border-top: 3px solid var(--tc);
   box-shadow: var(--card-shadow);
   transition:
     transform 0.28s var(--spring),
@@ -1331,7 +1332,7 @@ button:hover .mini-card.c {
 .lane-box.over {
   transform: scale(1.025);
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--agent) 45%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--tc) 45%, transparent),
     var(--card-shadow-hover);
 }
 .lane-box.lane-none {
@@ -1425,8 +1426,8 @@ button:hover .mini-card.c {
   box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.45);
   cursor: grabbing;
 }
-.pcard.s-ai_running {
-  background: linear-gradient(90deg, rgba(124, 92, 255, 0.05), rgba(124, 92, 255, 0.17), rgba(124, 92, 255, 0.05));
+.pcard.s-active {
+  background: linear-gradient(90deg, rgba(47, 124, 246, 0.04), rgba(47, 124, 246, 0.13), rgba(47, 124, 246, 0.04));
   background-size: 200% 100%;
   animation: shimmer 2.4s linear infinite;
 }
@@ -1822,6 +1823,14 @@ button.child-check:hover {
   transform: scale(1.12);
   border-color: var(--c);
 }
+.child-check.t-active {
+  border-color: var(--c-active);
+  background: radial-gradient(circle, var(--c-active) 0 3px, var(--card) 3.5px);
+}
+.child-check.t-paused {
+  border-color: var(--c-paused);
+  background: linear-gradient(90deg, transparent 0 2.5px, var(--c-paused) 2.5px 4.5px, transparent 4.5px 6.5px, var(--c-paused) 6.5px 8.5px, transparent 8.5px);
+}
 .child.done .child-check {
   background: var(--c);
   border-color: var(--c);
@@ -2012,22 +2021,67 @@ button.child-check:hover {
 .task-status-chip:hover {
   transform: scale(1.05);
 }
-.task-status-chip i,
-.task-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--tc);
+/* 状态小图形：待办 空心圈 / 进行中 跳动的实心点 / 已暂停 两道竖线 / 已完成 对勾 */
+.status-glyph {
   flex-shrink: 0;
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.status-glyph.t-todo {
+  border: 1.5px solid var(--tc);
+}
+.status-glyph.t-active {
+  background: var(--tc);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.status-glyph.t-paused {
+  border-radius: 0;
+  background: linear-gradient(90deg, var(--tc) 0 3px, transparent 3px 5px, var(--tc) 5px 8px);
+}
+.status-glyph.t-done {
+  background: var(--tc);
+}
+.status-glyph.t-done::after {
+  content: '';
+  position: absolute;
+  left: 2.6px;
+  top: 1.2px;
+  width: 2px;
+  height: 4px;
+  border: solid #fff;
+  border-width: 0 1.3px 1.3px 0;
+  transform: rotate(45deg);
+}
+.task-status.small .task-status-chip {
+  height: 17px;
+  padding: 0 6px;
+  font-size: 10.5px;
+}
+.stop-tags {
+  margin-left: auto;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.stop-tags .agent-icon:not(.agent-none) {
+  opacity: 0.9;
+}
+.child > .task-status {
+  margin-top: 1px;
 }
 .t-todo {
   --tc: var(--muted);
 }
 .t-active {
-  --tc: var(--c-doing);
+  --tc: var(--c-active);
 }
 .t-paused {
-  --tc: var(--c-review);
+  --tc: var(--c-paused);
 }
 .t-done {
   --tc: var(--c-done);
@@ -2408,4 +2462,176 @@ button.child-check:hover {
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--muted);
+}
+
+/* 进程列头：状态图形放大 */
+.lane-glyph {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--tc) 14%, transparent);
+}
+.lane-glyph .status-glyph {
+  transform: scale(1.5);
+}
+
+/* ---------- 紧凑版任务正文：晾衣绳上的任务卡片，功能和侧边栏一样，只是更密 ---------- */
+
+.task-body.compact .dtask-title {
+  font-size: 15px;
+  margin: 0;
+}
+.task-body.compact .dtask-goal {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+}
+.task-body.compact .task-prompt {
+  margin-bottom: 8px;
+}
+.task-body.compact .dsection-title {
+  margin: 0 2px 4px;
+  font-size: 11px;
+}
+.task-body.compact .route {
+  margin-bottom: 2px;
+}
+.task-body.compact .stop-main {
+  gap: 6px;
+  padding: 1px 0;
+}
+.task-body.compact .stop-node {
+  width: 16px;
+  height: 16px;
+  margin-top: 5px;
+  border-width: 1.5px;
+}
+.task-body.compact .stop.solo .stop-node {
+  border-radius: 5px;
+}
+.task-body.compact .node-core {
+  width: 6px;
+  height: 6px;
+  font-size: 8px;
+}
+.task-body.compact .link.on {
+  height: 12px;
+  margin: -2px 0;
+}
+.task-body.compact .link.off {
+  height: 5px;
+}
+.task-body.compact .link-line {
+  left: 6.5px;
+}
+.task-body.compact .link-chip {
+  left: 15px;
+  font-size: 9.5px;
+  line-height: 13px;
+}
+.task-body.compact .stop-body {
+  padding: 4px 7px 5px;
+  border-radius: 9px;
+}
+.task-body.compact .stop-title {
+  font-size: 12.5px;
+}
+.task-body.compact .stop-tags {
+  gap: 4px;
+}
+.task-body.compact .stop-tags .task-status-chip {
+  height: 18px;
+  padding: 0 6px;
+  font-size: 10.5px;
+}
+.task-body.compact .stop-meta {
+  margin-top: 1px;
+  font-size: 10.5px;
+}
+.task-body.compact .prompt-wrap.mini {
+  margin-top: 3px;
+}
+.task-body.compact .child {
+  margin-left: 22px;
+  padding: 1px 4px;
+  gap: 5px;
+}
+.task-body.compact .child-check {
+  width: 13px;
+  height: 13px;
+}
+.task-body.compact .child-title {
+  font-size: 12px;
+}
+.task-body.compact .tree-indicator.nested {
+  margin-left: 22px;
+}
+.task-body.compact .stop.add input {
+  font-size: 12px;
+}
+/* 紧凑版：没填的提示词不占地方——鼠标移到那一行上才冒出「＋ 提示词」；任务提示词的小胶囊一直显示 */
+.task-body.compact .task-prompt {
+  margin-bottom: 6px;
+}
+.task-body.compact .task-prompt .prompt-field.mini.inline-display.empty {
+  margin: 0;
+  opacity: 0.75;
+}
+.task-body.compact .stop .prompt-field.mini.inline-display.empty,
+.task-body.compact .child .prompt-field.mini.inline-display.empty {
+  display: none;
+}
+.task-body.compact .stop-main:hover .prompt-field.mini.inline-display.empty,
+.task-body.compact .child:hover .prompt-field.mini.inline-display.empty {
+  display: inline-block;
+  opacity: 1;
+}
+.task-body.compact .child-title {
+  flex-wrap: nowrap;
+}
+.task-body.compact .child-title > .inline-display:not(.prompt-field) {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.task-body.compact .child-title .prompt-field.mini.inline-display.empty {
+  flex: none;
+}
+
+/* ---------- 右键菜单：就地换状态 ---------- */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 2000;
+  min-width: 132px;
+  max-width: 220px;
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 16px 36px -10px rgba(0, 0, 0, 0.4);
+  animation: menu-pop 0.18s var(--spring);
+  transform-origin: top left;
+}
+.ctx-title {
+  padding: 3px 8px 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx-menu .agent-option {
+  padding: 5px 8px;
+  font-size: 12.5px;
+}
+.ctx-action {
+  margin-top: 3px;
+  border-top: 1px solid var(--card-border);
+  border-radius: 0 0 9px 9px;
+  color: var(--text-2);
 }

@@ -1,35 +1,36 @@
 import { DndContext, DragOverlay, pointerWithin, useDraggable, useDroppable } from '@dnd-kit/core'
 import { useEffect, useState, type CSSProperties } from 'react'
-import { AGENTS, AGENT_BY_ID } from '../../../shared/agents'
-import { STATUS_LABEL, type Assignee, type ProcessBoard, type ProcessItem } from '../../../shared/types'
+import { STATUS_LABEL, type ProcessBoard, type ProcessItem, type Status } from '../../../shared/types'
 import { api } from '../api'
 import { AgentIcon } from '../components/AgentIcon'
 import { Copyable, useDelayedClick } from '../components/Copy'
 import { markDragging, useDndSensors } from '../components/Sortable'
+import { StatusGlyph } from '../components/StatusPicker'
 import { PromptPill, toast } from '../dock/parts'
 import { cx } from '../util'
 
-// 进程视图：每个执行者一条泳道，看谁在跑什么。把卡片拖到某个头像上 = 交给 TA
+// 进程视图：按状态分成 进行中 / 待办 / 已暂停 / 今天完成 四列。把卡片拖到另一列 = 改成那个状态
 
-const LANE = 'lane:'
+const COLUMN = 'column:'
+const COLUMNS: Status[] = ['active', 'todo', 'paused', 'done']
+const COLUMN_NAME: Record<Status, string> = { active: '进行中', todo: '待办', paused: '已暂停', done: '今天完成' }
+const COLUMN_EMPTY: Record<Status, string> = {
+  active: '没有在做的，把卡片拖过来开始',
+  todo: '没有待办',
+  paused: '没有暂停的',
+  done: '今天还没完成的'
+}
 
 export function ProcessView({ board, onOpenTask }: { board: ProcessBoard; onOpenTask: (taskId: string) => void }) {
   const sensors = useDndSensors()
   const [active, setActive] = useState<ProcessItem | null>(null)
   // 松手后先在本地挪过去，等数据刷新回来再以数据为准
-  const [moved, setMoved] = useState<Record<string, Assignee>>({})
+  const [moved, setMoved] = useState<Record<string, Status>>({})
   useEffect(() => setMoved({}), [board])
 
-  const all = [...board.unassigned, ...AGENTS.flatMap((a) => board.lanes[a.id])]
-  const laneOf = (item: ProcessItem): Assignee => {
-    if (item.subtaskId in moved) return moved[item.subtaskId]
-    if (item.agent) return item.agent
-    return item.status === 'doing' ? 'me' : ''
-  }
-  const itemsIn = (lane: Assignee): ProcessItem[] => all.filter((i) => laneOf(i) === lane)
-
-  const running = all.filter((i) => i.status === 'ai_running').length
-  const doing = all.filter((i) => i.status === 'doing').length
+  const all = COLUMNS.flatMap((c) => board.columns[c])
+  const statusOf = (item: ProcessItem): Status => moved[item.subtaskId] ?? item.status
+  const itemsIn = (status: Status): ProcessItem[] => all.filter((i) => statusOf(i) === status)
 
   return (
     <DndContext
@@ -47,93 +48,71 @@ export function ProcessView({ board, onOpenTask }: { board: ProcessBoard; onOpen
         markDragging(false)
         setActive(null)
         if (!over) return
-        const lane = String(over.id).slice(LANE.length) as Assignee
+        const status = String(over.id).slice(COLUMN.length) as Status
         const item = all.find((i) => i.subtaskId === a.id)
-        if (!item || laneOf(item) === lane) return
-        setMoved({ ...moved, [item.subtaskId]: lane })
-        api.assignSubtask(item.subtaskId, lane)
-        toast(lane ? `→ 交给 ${AGENT_BY_ID[lane].name}` : '已取消分配')
+        if (!item || statusOf(item) === status) return
+        setMoved({ ...moved, [item.subtaskId]: status })
+        api.updateSubtask(item.subtaskId, { status })
+        toast(`→ ${STATUS_LABEL[status]}`)
       }}
     >
       <div className="process-summary">
-        <span>
-          <b>{running}</b> 个 AI 在跑
-        </span>
-        <span>
-          <b>{doing}</b> 个我在做
-        </span>
-        <span>
-          今天完成 <b>{board.doneToday}</b>
-        </span>
+        {COLUMNS.map((c) => (
+          <span key={c}>
+            {COLUMN_NAME[c]} <b>{itemsIn(c).length}</b>
+          </span>
+        ))}
       </div>
 
       <div className="lanes-board wide">
-        <Lane agent="" items={itemsIn('')} onOpenTask={onOpenTask} />
-        {AGENTS.map((a) => (
-          <Lane key={a.id} agent={a.id} items={itemsIn(a.id)} onOpenTask={onOpenTask} />
+        {COLUMNS.map((c) => (
+          <Column key={c} status={c} items={itemsIn(c)} onOpenTask={onOpenTask} />
         ))}
       </div>
 
       <DragOverlay dropAnimation={{ duration: 200, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.2)' }}>
-        {active ? <ProcessCard item={active} lane={laneOf(active)} overlay /> : null}
+        {active ? <ProcessCard item={active} status={statusOf(active)} overlay /> : null}
       </DragOverlay>
     </DndContext>
   )
 }
 
-function Lane({ agent, items, onOpenTask }: { agent: Assignee; items: ProcessItem[]; onOpenTask: (id: string) => void }) {
-  const { setNodeRef, isOver } = useDroppable({ id: LANE + agent })
-  const info = agent ? AGENT_BY_ID[agent] : null
-  const working = items.filter((i) => i.status === 'ai_running' || i.status === 'doing').length
-  const queued = items.filter((i) => i.status === 'todo').length
-  const busy = working > 0
-
-  const summary = !agent
-    ? items.length
-      ? `${items.length} 个等人领`
-      : '都分出去了'
-    : [working && `${agent === 'me' ? '在做' : '在跑'} ${working}`, queued && `排队 ${queued}`]
-        .filter(Boolean)
-        .join(' · ') || '空闲'
-
+function Column({ status, items, onOpenTask }: { status: Status; items: ProcessItem[]; onOpenTask: (id: string) => void }) {
+  const { setNodeRef, isOver } = useDroppable({ id: COLUMN + status })
   return (
-    <section
-      ref={setNodeRef}
-      id={`lane-${agent || 'none'}`}
-      className={cx('lane-box', `lane-${agent || 'none'}`, isOver && 'over', !busy && agent && 'idle')}
-      style={{ '--agent': info?.color ?? 'var(--muted)' } as CSSProperties}
-    >
+    <section ref={setNodeRef} className={cx('lane-box', `t-${status}`, isOver && 'over', items.length === 0 && 'idle')}>
       <header className="lane-head">
-        <AgentIcon agent={agent} size={28} busy={busy} />
+        <span className="lane-glyph">
+          <StatusGlyph status={status} />
+        </span>
         <div className="lane-who">
-          <span className="lane-name">{info ? info.name : '未分配'}</span>
-          <span className="lane-sum">{summary}</span>
+          <span className="lane-name">{COLUMN_NAME[status]}</span>
+          <span className="lane-sum">{items.length} 件</span>
         </div>
-        {agent && !busy && <span className="zzz">z z</span>}
       </header>
       <div className="lane-items">
         {items.map((i) => (
-          <DraggableCard key={i.subtaskId} item={i} lane={agent} onOpenTask={onOpenTask} />
+          <DraggableCard key={i.subtaskId} item={i} status={status} onOpenTask={onOpenTask} />
         ))}
-        {items.length === 0 && <div className="lane-drop-hint">{isOver ? '松手交给 TA' : agent ? '把卡片拖到这里交给 TA' : ''}</div>}
+        {items.length === 0 && <div className="lane-drop-hint">{isOver ? `松手改成${STATUS_LABEL[status]}` : COLUMN_EMPTY[status]}</div>}
       </div>
     </section>
   )
 }
 
-function DraggableCard({ item, lane, onOpenTask }: { item: ProcessItem; lane: Assignee; onOpenTask: (id: string) => void }) {
+function DraggableCard({ item, status, onOpenTask }: { item: ProcessItem; status: Status; onOpenTask: (id: string) => void }) {
   const { setNodeRef, attributes, listeners, isDragging } = useDraggable({ id: item.subtaskId })
   const click = useDelayedClick(() => onOpenTask(item.taskId))
   return (
     <div ref={setNodeRef} {...attributes} {...listeners} className={cx('pcard-slot', isDragging && 'placeholder')} onClick={click.onClick}>
-      <ProcessCard item={item} lane={lane} />
+      <ProcessCard item={item} status={status} />
     </div>
   )
 }
 
-function ProcessCard({ item, lane, overlay }: { item: ProcessItem; lane: Assignee; overlay?: boolean }) {
+function ProcessCard({ item, status, overlay }: { item: ProcessItem; status: Status; overlay?: boolean }) {
   return (
-    <div className={cx('pcard', `s-${item.status}`, overlay && 'overlay')} style={{ '--c': item.color } as CSSProperties}>
+    <div className={cx('pcard', `s-${status}`, overlay && 'overlay')} style={{ '--c': item.color } as CSSProperties}>
       <div className="pcard-title">
         <span className="ref">S{item.ref}</span>
         <Copyable>{item.title}</Copyable>
@@ -144,10 +123,8 @@ function ProcessCard({ item, lane, overlay }: { item: ProcessItem; lane: Assigne
         {item.projectTitle} · {item.taskTitle}
       </div>
       <div className="pcard-meta">
-        <span className={cx('now-status', `s-${item.status}`)}>
-          {item.status === 'todo' && lane ? '排队中' : STATUS_LABEL[item.status]}
-        </span>
-        {item.waitingFor && <span className="waiting">🔒 等 S{item.waitingFor}</span>}
+        {item.agent && <AgentIcon agent={item.agent} size={16} busy={status === 'active'} />}
+        {item.waitingFor && status !== 'done' && <span className="waiting">🔒 等 S{item.waitingFor}</span>}
       </div>
     </div>
   )

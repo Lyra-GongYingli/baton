@@ -3,6 +3,7 @@ import type { DockState } from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
 import { ProjectView } from '../board/ProjectView'
 import { CopyFlash } from '../components/Copy'
+import { StatusMenuHost } from '../components/StatusMenu'
 import { isDragging } from '../components/Sortable'
 import { cx } from '../util'
 import { DockMonth } from './DockMonth'
@@ -37,9 +38,9 @@ export function DockApp() {
     }
   }, [])
 
-  // 鼠标碰把手展开的，如果鼠标一直没进来，过一会儿自己收回去
+  // 拖着东西停在把手上弹开的，如果鼠标一直没进来，过一会儿自己收回去
   useEffect(() => {
-    if (!state?.open || !state.openedByHover || state.pinned) return
+    if (!state?.open || !state.peek || state.pinned) return
     const timer = window.setTimeout(() => {
       if (!mouseInside.current) api.dockClose()
     }, 1500)
@@ -61,7 +62,8 @@ export function DockApp() {
 
   const onLeave = (): void => {
     mouseInside.current = false
-    if (!state || state.pinned || !state.hoverOpen || typing() || isDragging()) return
+    // 只有「拖着东西弹开」的才在移出去时收回；点开的要点别处、按 Esc 或者快捷键收起
+    if (!state || state.pinned || !state.peek || typing() || isDragging()) return
     clearTimeout(leaveTimer.current)
     leaveTimer.current = window.setTimeout(() => {
       if (!isDragging()) api.dockClose()
@@ -128,6 +130,7 @@ export function DockApp() {
         </div>
         <Toast />
         <CopyFlash />
+        <StatusMenuHost />
       </div>
     </div>
   )
@@ -138,8 +141,7 @@ function DockProjects({ onOpenTask }: { onOpenTask: (id: string) => void }) {
   const [board] = useData(() => api.processBoard(), [])
   if (!trees) return null
 
-  const all = board ? [...board.unassigned, ...Object.values(board.lanes).flat()] : []
-  const running = all.filter((i) => i.status === 'ai_running')
+  const running = board?.columns.active ?? []
   const activeCount = trees.reduce((n, t) => n + t.tasks.filter((x) => x.status === 'active' || x.status === 'todo').length, 0)
 
   return (
@@ -152,7 +154,7 @@ function DockProjects({ onOpenTask }: { onOpenTask: (id: string) => void }) {
       {running.length > 0 && (
         <button className="running-link" onClick={() => api.lineOpen()}>
           <span className="running-dot" />
-          {running.length} 个 AI 正在跑
+          {running.length} 个子任务进行中
           <span className="typing">
             <i />
             <i />

@@ -5,7 +5,8 @@ import { api } from '../api'
 import { AgentIcon } from '../components/AgentIcon'
 import { Copyable, useDelayedClick } from '../components/Copy'
 import type { DragHandle } from '../components/Sortable'
-import { TaskStatusPicker } from '../components/TaskStatusPicker'
+import { openStatusMenu } from '../components/StatusMenu'
+import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
 import { PromptPill, tiltOf, toast, Track, useDropTarget } from '../dock/parts'
 import { cx, timeAgo, titleFromText } from '../util'
 
@@ -27,7 +28,6 @@ export function TaskCard({
     toast(`✓ 在「${t.title}」里加了一个子任务`)
   })
   const click = useDelayedClick(onOpen)
-  const busy = t.current?.status === 'ai_running' || t.current?.status === 'doing'
   // 复制图标：优先任务提示词，没有就复制当前子任务的
   const copy = t.prompt
     ? { text: expandPrompt(t.prompt, t), label: '复制任务提示词' }
@@ -42,6 +42,14 @@ export function TaskCard({
         className={cx('tcard', `t-${t.status}`, drop.over && 'drop-over')}
         style={style}
         onClick={click.onClick}
+        onContextMenu={(e) =>
+          openStatusMenu(e, {
+            title: t.title,
+            value: t.status,
+            onChange: (status) => api.updateTask(t.id, { status }),
+            actions: [{ label: '打开', onClick: onOpen }]
+          })
+        }
         {...drag?.attributes}
         {...drag?.listeners}
         {...drop.props}
@@ -56,10 +64,13 @@ export function TaskCard({
         <div className="tcard-now">
           {t.current ? (
             <>
-              <AgentIcon agent={t.current.agent} size={16} busy={busy} />
+              <span className={cx('now-status', `t-${t.current.status}`)}>
+                <StatusGlyph status={t.current.status} />
+                {STATUS_LABEL[t.current.status]}
+              </span>
               <b>S{t.current.ref}</b>
               <Copyable>{t.current.title}</Copyable>
-              <span className={cx('now-status', `s-${t.current.status}`)}>{STATUS_LABEL[t.current.status]}</span>
+              {t.current.agent && <AgentIcon agent={t.current.agent} size={15} busy={t.current.status === 'active'} />}
             </>
           ) : t.subtaskTotal > 0 ? (
             '子任务都完成了 🏁'

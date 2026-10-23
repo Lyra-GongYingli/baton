@@ -17,9 +17,20 @@ export function useDndSensors() {
 }
 
 /** 拖动期间在 body 上做个标记，侧边栏看到就不会自动收起 */
+let dragEndedAt = 0
+
 export function markDragging(on: boolean): void {
-  if (on) document.body.dataset.dragging = '1'
-  else delete document.body.dataset.dragging
+  if (on) {
+    document.body.dataset.dragging = '1'
+  } else {
+    delete document.body.dataset.dragging
+    dragEndedAt = Date.now()
+  }
+}
+
+/** 正在拖，或者刚松手 / 刚按 Esc 取消拖动：这一下 Esc 是冲着拖动去的，别再拿去收起窗口 */
+export function draggingOrJustDragged(): boolean {
+  return isDragging() || Date.now() - dragEndedAt < 300
 }
 
 export function isDragging(): boolean {

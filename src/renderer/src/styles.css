@@ -14,10 +14,10 @@
   --accent-soft: rgba(61, 90, 254, 0.1);
   --danger: #d64545;
 
+  /* 状态颜色：待办 / 进行中 / 已暂停 / 已完成 */
   --c-todo: #a8a7a1;
-  --c-doing: #2f7cf6;
-  --c-ai_running: #8b5cf6;
-  --c-review: #f08c00;
+  --c-active: #2f7cf6;
+  --c-paused: #f08c00;
   --c-done: #2f9e6b;
 
   --radius: 10px;

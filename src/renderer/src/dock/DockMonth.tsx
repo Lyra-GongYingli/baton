@@ -10,11 +10,12 @@ import {
 } from '@dnd-kit/core'
 import { getEventCoordinates } from '@dnd-kit/utilities'
 import { useEffect, useState, type CSSProperties } from 'react'
-import { STATUS_LABEL, type CalendarItem } from '../../../shared/types'
+import type { CalendarItem } from '../../../shared/types'
 import { api, useData } from '../api'
 import { AgentIcon } from '../components/AgentIcon'
 import { copyWithFlash, useDelayedClick } from '../components/Copy'
 import { markDragging, useDndSensors } from '../components/Sortable'
+import { StatusPicker } from '../components/StatusPicker'
 import { cx } from '../util'
 import { toast } from './parts'
 
@@ -319,10 +320,9 @@ function RowBody({ item }: { item: CalendarItem }) {
           {item.projectTitle} · {item.taskTitle}
         </div>
       </div>
-      {item.agent && <AgentIcon agent={item.agent} size={18} busy={item.status === 'ai_running'} />}
-      <span className={cx('now-status', `s-${item.status}`)}>
-        {item.waitingFor && item.status !== 'done' ? `等 S${item.waitingFor}` : STATUS_LABEL[item.status]}
-      </span>
+      {item.waitingFor && item.status !== 'done' && <span className="waiting">等 S{item.waitingFor}</span>}
+      {item.agent && <AgentIcon agent={item.agent} size={16} busy={item.status === 'active'} />}
+      <StatusPicker value={item.status} onChange={(status) => api.updateSubtask(item.subtaskId, { status })} />
     </div>
   )
 }

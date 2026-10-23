@@ -49,20 +49,6 @@ export function Settings() {
         </div>
         <label className="setting-row">
           <div>
-            <div className="setting-label">鼠标碰到把手就展开</div>
-            <div className="muted small">关掉后需要点一下把手才展开，避免误碰。</div>
-          </div>
-          <input
-            type="checkbox"
-            checked={settings.dock.hoverOpen}
-            onChange={async (e) => {
-              await api.setDockHoverOpen(e.target.checked)
-              reload()
-            }}
-          />
-        </label>
-        <label className="setting-row">
-          <div>
             <div className="setting-label">一直展开（钉住）</div>
             <div className="muted small">侧边栏右上角的图钉也能切换。</div>
           </div>

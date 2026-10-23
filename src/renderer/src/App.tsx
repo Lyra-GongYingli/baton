@@ -4,6 +4,7 @@ import { api, onMainEvent, useData } from './api'
 import { ProcessView } from './board/ProcessView'
 import { ProjectView } from './board/ProjectView'
 import { CopyFlash } from './components/Copy'
+import { StatusMenuHost } from './components/StatusMenu'
 import { Toast, toast } from './dock/parts'
 import { cx } from './util'
 import { NewTaskDialog } from './views/NewTaskDialog'
@@ -107,6 +108,7 @@ export function App() {
       )}
       <Toast />
       <CopyFlash />
+      <StatusMenuHost />
     </div>
   )
 }
@@ -117,7 +119,7 @@ function ProcessPage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
     <div className="page wide">
       <header className="page-header">
         <h1>进程</h1>
-        <p className="muted">谁在做什么，一眼看清。把卡片拖到某个头像下面，就是交给 TA。</p>
+        <p className="muted">按状态看所有在推进的子任务。把卡片拖到另一列，就是改成那个状态。</p>
       </header>
       {board && <ProcessView board={board} onOpenTask={onOpenTask} />}
     </div>

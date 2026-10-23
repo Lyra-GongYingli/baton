@@ -15,13 +15,16 @@ interface StoredSettings {
   handleRatio: number
   /** AI 工具连 MCP 服务用的密钥 */
   mcpToken: string | null
+  /** 晾衣绳固定住了：一直挂着，点别的软件也不收，重启后还在 */
+  linePinned: boolean
 }
 
 const DEFAULTS: StoredSettings = {
   currentTaskId: null,
-  dock: { side: 'right', pinned: false, hoverOpen: true },
+  dock: { side: 'right', pinned: false },
   handleRatio: 0.32,
-  mcpToken: null
+  mcpToken: null,
+  linePinned: false
 }
 
 /** settings.json 是不是第一次创建（用来在首次启动时展开侧边栏打个招呼） */
@@ -45,9 +48,11 @@ function load(): StoredSettings {
       cache = {
         // 第一版叫 currentThreadId，任务 id 没变，直接沿用
         currentTaskId: stored.currentTaskId ?? stored.currentThreadId ?? null,
-        dock: { ...DEFAULTS.dock, ...stored.dock },
+        // 旧版的「鼠标碰到把手就展开」（hoverOpen）已经去掉，不再读
+        dock: { side: stored.dock?.side ?? DEFAULTS.dock.side, pinned: stored.dock?.pinned ?? DEFAULTS.dock.pinned },
         handleRatio: stored.handleRatio ?? DEFAULTS.handleRatio,
-        mcpToken: stored.mcpToken ?? null
+        mcpToken: stored.mcpToken ?? null,
+        linePinned: stored.linePinned ?? false
       }
     } catch {
       // 文件坏了就用默认值
@@ -59,6 +64,14 @@ function load(): StoredSettings {
 function save(patch: Partial<StoredSettings>): void {
   cache = { ...load(), ...patch }
   writeFileSync(file(), JSON.stringify(cache, null, 2))
+}
+
+export function getLinePinned(): boolean {
+  return load().linePinned
+}
+
+export function setLinePinned(linePinned: boolean): void {
+  save({ linePinned })
 }
 
 /** MCP 密钥：第一次用时生成，之后一直沿用 */
