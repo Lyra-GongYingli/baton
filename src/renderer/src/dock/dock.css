@@ -282,12 +282,31 @@ body.route-handle {
   overflow: hidden;
 }
 
+/* 任务的时间：今天 / 10/25 / 今天 – 10/28；逾期标红。挤的时候整块换到下一行，不压缩 */
 .tcard-time {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
-  color: var(--muted);
+  color: var(--text-2);
   white-space: nowrap;
   padding-top: 0;
   margin-left: auto;
+}
+.tcard-time svg {
+  color: var(--muted);
+}
+.tcard-time.empty {
+  color: var(--muted);
+}
+.tcard-time.overdue,
+.tcard-time.overdue svg {
+  color: var(--danger);
+}
+.tcard-later {
+  font-size: 10.5px;
+  color: var(--muted);
 }
 
 .tcard-now {
@@ -2232,7 +2251,7 @@ button.child-check:hover {
 .month-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 3px;
+  gap: 2px;
 }
 .month-weekdays span {
   padding-bottom: 4px;
@@ -2249,7 +2268,7 @@ button.child-check:hover {
   position: relative;
   min-width: 0;
   height: 56px;
-  padding: 3px 3px 2px;
+  padding: 3px 2px 2px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -2307,17 +2326,18 @@ button.child-check:hover {
   flex: none;
   display: block;
   min-width: 0;
-  padding: 0 3px 0 4px;
+  padding: 0 2px 0 3px;
   border-radius: 4px;
   border-left: 2.5px solid var(--c);
   background: color-mix(in srgb, var(--c) 16%, transparent);
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 650;
   line-height: 14px;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: clip;
+  /* 放不下就以「…」结尾，别把字切成半个；鼠标停上去能看到完整标题 */
+  text-overflow: ellipsis;
   cursor: grab;
   touch-action: none;
 }
@@ -2634,4 +2654,338 @@ button.child-check:hover {
   border-top: 1px solid var(--card-border);
   border-radius: 0 0 9px 9px;
   color: var(--text-2);
+}
+
+/* ---------- 大窗口里的月历：格子在左、清单在右 ---------- */
+
+.month.wide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  /* 右边两块（当天清单、待安排）紧挨着往下排，多出来的高度都给第二行 */
+  grid-template-rows: auto 1fr;
+  column-gap: 24px;
+  align-items: start;
+}
+.month.wide .month-sticky {
+  grid-row: 1 / span 2;
+  position: static;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+}
+.month.wide .month-list {
+  grid-column: 2;
+  margin-top: 0;
+}
+.month.wide .month-tray {
+  margin: 12px 0 0;
+}
+.month.wide .month-title {
+  font-size: 18px;
+  min-width: 140px;
+}
+.month.wide .month-weekdays span {
+  font-size: 12px;
+}
+.month.wide .month-grid {
+  gap: 5px;
+}
+.month.wide .month-cell {
+  height: 112px;
+  padding: 5px 5px 4px;
+  gap: 3px;
+  border-radius: 11px;
+}
+.month.wide .month-date {
+  font-size: 12.5px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
+}
+.month.wide .month-chip {
+  font-size: 11.5px;
+  line-height: 18px;
+  padding: 0 5px 0 6px;
+  border-radius: 5px;
+  text-overflow: ellipsis;
+}
+.month.wide .month-more {
+  top: 8px;
+  right: 7px;
+  font-size: 11px;
+}
+.month.wide .month-cell.over {
+  transform: scale(1.03);
+}
+
+/* ---------- 子任务的「哪天做」 ---------- */
+
+.date-chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--hover);
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    transform 0.2s var(--spring);
+}
+.date-chip:hover {
+  transform: scale(1.05);
+  background: color-mix(in srgb, var(--accent) 12%, var(--hover));
+}
+.date-chip svg {
+  opacity: 0.75;
+}
+.date-chip.today {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.date-chip.empty {
+  color: var(--muted);
+  font-weight: 500;
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+}
+.date-chip.overdue {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 11%, transparent);
+}
+.date-chip.done {
+  opacity: 0.6;
+}
+.date-chip-late {
+  font-weight: 700;
+}
+
+/* 选日子的小面板 */
+.date-pop {
+  position: fixed;
+  z-index: 2100;
+  width: 232px;
+  padding: 8px;
+  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.42);
+  animation: menu-pop 0.18s var(--spring);
+  color: var(--text);
+}
+/* 全局的 button 是左对齐的，面板里的按钮都居中 */
+.date-pop button {
+  text-align: center;
+}
+.date-pop-quick {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.date-pop-quick button {
+  padding: 4px 0;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--hover);
+}
+.date-pop-quick button:hover,
+.date-pop-quick button.active {
+  color: #fff;
+  background: var(--accent);
+}
+.date-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 4px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.date-pop-head button {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-2);
+}
+.date-pop-head button:hover {
+  background: var(--hover);
+}
+.date-pop-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.date-pop-wd {
+  padding: 2px 0;
+  text-align: center;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.date-pop-day {
+  height: 26px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.date-pop-day:hover {
+  background: var(--hover);
+}
+.date-pop-day.outside {
+  color: var(--muted);
+  opacity: 0.6;
+}
+.date-pop-day.today {
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.date-pop-day.selected {
+  color: #fff;
+  background: var(--accent);
+  font-weight: 700;
+}
+/* 分隔线单独一条，别画在圆角按钮上（会弯成一道弧） */
+.date-pop-foot {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--card-border);
+}
+.date-pop-clear {
+  width: 100%;
+  padding: 5px 0;
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.date-pop-clear:hover {
+  background: var(--hover);
+}
+
+/* 子任务那一栏标题旁边：任务时间 */
+.task-span {
+  margin-left: 4px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.task-span.overdue {
+  color: var(--danger);
+}
+
+/* ---------- 月历：往某一天加东西 ---------- */
+
+.month-add-btn {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.month-add-btn:hover {
+  filter: brightness(1.08);
+}
+.month-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1.5px solid var(--accent);
+  box-shadow: var(--card-shadow);
+}
+.month-add input {
+  padding: 4px 2px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+}
+.month-add input:focus {
+  box-shadow: none;
+}
+.month-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.month-add-row select {
+  min-width: 0;
+  flex: 1;
+  padding: 3px 6px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.month-add-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.month-add-cancel,
+.month-add-go {
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.month-add-cancel {
+  color: var(--text-2);
+}
+.month-add-cancel:hover {
+  background: var(--hover);
+}
+.month-add-go {
+  color: #fff;
+  background: var(--accent);
+}
+.month-add-go:disabled {
+  opacity: 0.45;
+}
+
+/* 格子右上角：鼠标移上去冒出「＋」，点一下在这天加东西（「+N」先让开） */
+.month-cell-add {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+  background: var(--accent-soft);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.month-cell:hover .month-cell-add {
+  opacity: 1;
+}
+.month-cell:hover .month-more {
+  opacity: 0;
+}
+.is-dragging .month-cell-add {
+  display: none;
+}
+.month.wide .month-cell-add {
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  font-size: 13px;
 }

@@ -1,5 +1,6 @@
+import { spanLabel, today } from '../../../shared/dates'
 import { expandPrompt } from '../../../shared/prompt'
-import type { TaskDetail } from '../../../shared/types'
+import type { Subtask, TaskDetail } from '../../../shared/types'
 import { api } from '../api'
 import { InlineEdit } from '../components/InlineEdit'
 import { PromptBox } from '../components/PromptBox'
@@ -39,6 +40,7 @@ export function TaskBody({ detail, compact }: { detail: TaskDetail; compact?: bo
         <span className="muted">
           {done}/{subtasks.length}
         </span>
+        <TaskSpanLabel subtasks={subtasks} />
         {!compact && (
           <span className="legend">
             <i className="lg-chain" />
@@ -56,5 +58,21 @@ export function TaskBody({ detail, compact }: { detail: TaskDetail; compact?: bo
         </p>
       )}
     </div>
+  )
+}
+
+/** 任务的时间：没做完的子任务排在哪几天（最早 – 最晚）；有排在今天以前的标逾期 */
+export function TaskSpanLabel({ subtasks }: { subtasks: Subtask[] }) {
+  const days = subtasks
+    .filter((s) => s.status !== 'done' && s.scheduledOn)
+    .map((s) => s.scheduledOn)
+    .sort()
+  if (days.length === 0) return null
+  const overdue = days[0] < today()
+  return (
+    <span className={cx('task-span', overdue && 'overdue')}>
+      {spanLabel(days[0], days[days.length - 1])}
+      {overdue && ' · 逾期'}
+    </span>
   )
 }

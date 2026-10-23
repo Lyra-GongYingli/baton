@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react'
 import { expandPrompt } from '../../../shared/prompt'
 import { api, useData } from '../api'
 import { SubtaskRoute } from '../board/SubtaskRoute'
+import { TaskSpanLabel } from '../board/TaskBody'
 import { Editable } from '../components/Editable'
 import { PromptBox } from '../components/PromptBox'
 import { TaskStatusPicker } from '../components/StatusPicker'
@@ -85,6 +86,7 @@ export function TaskView({ id, onDeleted }: { id: string; onDeleted: () => void 
       <section>
         <h2 className="section-title">
           子任务 <span className="muted small">{subtasks.filter((s) => s.status === 'done').length}/{subtasks.length}</span>
+          <TaskSpanLabel subtasks={subtasks} />
           <span className="legend">
             <i className="lg-chain" />
             接力（上一个完成后才轮到它）

@@ -2,6 +2,7 @@ import { DndContext, DragOverlay, pointerWithin, useDraggable, useDroppable } fr
 import { useEffect, useState, type CSSProperties } from 'react'
 import { STATUS_LABEL, type ProcessBoard, type ProcessItem, type Status } from '../../../shared/types'
 import { api } from '../api'
+import { dayLabel, today } from '../../../shared/dates'
 import { AgentIcon } from '../components/AgentIcon'
 import { Copyable, useDelayedClick } from '../components/Copy'
 import { markDragging, useDndSensors } from '../components/Sortable'
@@ -123,6 +124,9 @@ function ProcessCard({ item, status, overlay }: { item: ProcessItem; status: Sta
         {item.projectTitle} · {item.taskTitle}
       </div>
       <div className="pcard-meta">
+        {item.scheduledOn && (
+          <span className={cx('tcard-time', item.scheduledOn < today() && status !== 'done' && 'overdue')}>{dayLabel(item.scheduledOn)}</span>
+        )}
         {item.agent && <AgentIcon agent={item.agent} size={16} busy={status === 'active'} />}
         {item.waitingFor && status !== 'done' && <span className="waiting">🔒 等 S{item.waitingFor}</span>}
       </div>

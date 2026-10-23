@@ -8,6 +8,7 @@ import { expandPrompt, previousOf } from '../../../shared/prompt'
 import { STATUS_LABEL, type Subtask, type TaskDetail } from '../../../shared/types'
 import { api } from '../api'
 import { AgentPicker } from '../components/AgentPicker'
+import { DateChip } from '../components/DatePicker'
 import { InlineEdit, renderPrompt } from '../components/InlineEdit'
 import { PromptBox } from '../components/PromptBox'
 import { markDragging, useDndSensors, type DragHandle } from '../components/Sortable'
@@ -328,20 +329,19 @@ function Stop({
             </span>
           </div>
 
-          {((chained && prev) || s.children.length > 0) && (
-            <div className="stop-meta">
-              {chained && prev && (
-                <span className={cx('carry', waiting && 'waiting')}>
-                  {waiting ? `🔒 等 S${prev.ref} 完成` : `↳ 接着 S${prev.ref}`}
-                </span>
-              )}
-              {s.children.length > 0 && (
-                <span className="muted">
-                  {s.children.filter((c) => c.status === 'done').length}/{s.children.length} 个子子任务
-                </span>
-              )}
-            </div>
-          )}
+          <div className="stop-meta">
+            <DateChip value={s.scheduledOn} done={s.status === 'done'} onChange={(day) => api.updateSubtask(s.id, { scheduledOn: day })} />
+            {chained && prev && (
+              <span className={cx('carry', waiting && 'waiting')}>
+                {waiting ? `🔒 等 S${prev.ref} 完成` : `↳ 接着 S${prev.ref}`}
+              </span>
+            )}
+            {s.children.length > 0 && (
+              <span className="muted">
+                {s.children.filter((c) => c.status === 'done').length}/{s.children.length} 个子子任务
+              </span>
+            )}
+          </div>
 
           <PromptBox
             mini={compact}

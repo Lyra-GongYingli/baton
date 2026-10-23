@@ -347,6 +347,17 @@ body.route-line {
 .line-note-item.placeholder {
   opacity: 0.3;
 }
+.line-note-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.line-note-date-tag {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  opacity: 0.7;
+}
 .line-note-item i {
   flex: none;
   width: 6px;

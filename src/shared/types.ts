@@ -77,11 +77,16 @@ export interface TaskSummary extends Task {
   projectTitle: string
   subtaskTotal: number
   subtaskDone: number
-  current: { ref: number; title: string; status: Status; agent: Assignee } | null
+  /** 当前要做的那个子任务（第一个没做完的） */
+  current: { id: string; ref: number; title: string; status: Status; agent: Assignee; scheduledOn: string } | null
   /** 按顺序的每个子任务状态，用来画接力跑道 */
   statuses: Status[]
   /** 当前子任务的完整提示词，占位符已替换（拖拽时要同步拿到） */
   currentPrompt: string
+  /** 任务的时间：没做完的子任务排在哪几天（最早 ~ 最晚）；有排在今天以前的就是逾期。都没排就是 null */
+  span: { from: string; to: string; overdue: boolean } | null
+  /** 没做完、也还没排日子的子任务有几个 */
+  unscheduled: number
 }
 
 export interface ProjectTree {
@@ -104,12 +109,12 @@ export interface ProcessItem {
   /** 接力子任务的上一棒还没完成时，上一棒的编号 */
   waitingFor: number | null
   promptExpanded: string
+  /** 哪天做（YYYY-MM-DD），没排是空字符串 */
+  scheduledOn: string
 }
 
 /** 月历里的一个子任务 */
-export interface CalendarItem extends ProcessItem {
-  scheduledOn: string
-}
+export type CalendarItem = ProcessItem
 
 export interface CalendarBoard {
   /** 安排在这段日子里的子任务（包括已完成的） */
@@ -131,6 +136,38 @@ export interface LineBoard {
   paused: TaskSummary[]
   /** 今天完成的 */
   done: TaskSummary[]
+}
+
+/** 总看板：大窗口首页的各种统计 */
+export interface Dashboard {
+  /** 今天、本周一（本地日期 YYYY-MM-DD） */
+  today: string
+  weekStart: string
+  tiles: {
+    activeTasks: number
+    activeSubtasks: number
+    scheduledThisWeek: number
+    doneThisWeek: number
+    doneToday: number
+    /** 排在今天以前、还没完成的子任务 */
+    overdue: number
+  }
+  /** 热力图的日期范围（含两头，从周一到周日） */
+  heatFrom: string
+  heatTo: string
+  /** 每天安排了几个子任务（含已完成的） */
+  scheduled: Record<string, number>
+  /** 每天完成了几个子任务 */
+  done: Record<string, number>
+  /** 最近 12 周每周完成几个子任务，旧 → 新；week 是那周的周一 */
+  weekly: { week: string; done: number }[]
+  /** 每个项目的任务、子任务各状态有几个 */
+  projects: { id: string; title: string; color: string; tasks: Record<Status, number>; subtasks: Record<Status, number> }[]
+  /** 没完成的子任务按执行者分（'' = 未分配） */
+  agents: { agent: Assignee; active: number; todo: number; paused: number }[]
+  overdue: CalendarItem[]
+  /** 接下来 7 天（含今天）安排了、还没完成的 */
+  upcoming: CalendarItem[]
 }
 
 /** 进程：按状态分组。进行中 / 待办 / 已暂停 来自待办和进行中的任务，已完成只算今天完成的 */
@@ -181,9 +218,10 @@ export interface BatonApi {
   moveTask(id: string, projectId: string, index: number): Promise<void>
 
   /** parentId 不为空时，建的是这个子任务下面的子子任务 */
+  /** 新建子任务；scheduledOn 不传就排在今天（子子任务不排日子） */
   createSubtask(
     taskId: string,
-    input: { title: string; prompt?: string; chained?: boolean; agent?: Assignee; parentId?: string }
+    input: { title: string; prompt?: string; chained?: boolean; agent?: Assignee; parentId?: string; scheduledOn?: string }
   ): Promise<string>
   updateSubtask(id: string, patch: SubtaskPatch): Promise<void>
   /** 拖动后整体重排：从上到下的顺序，每项挂在哪个子任务下面（空字符串 = 本身是子任务） */
@@ -193,6 +231,7 @@ export interface BatonApi {
 
   processBoard(): Promise<ProcessBoard>
   lineBoard(): Promise<LineBoard>
+  dashboard(): Promise<Dashboard>
   /** 月历：from、to 是本地日期 YYYY-MM-DD（含两头） */
   calendar(from: string, to: string): Promise<CalendarBoard>
   /** 换执行者；只记谁在做，不改状态 */

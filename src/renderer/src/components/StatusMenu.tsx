@@ -64,9 +64,11 @@ export function StatusMenuHost() {
   // 贴着鼠标弹出；靠近窗口边缘时往里收
   useLayoutEffect(() => {
     if (!menu || !ref.current) return
-    const { width, height } = ref.current.getBoundingClientRect()
+    // 用排版尺寸量：弹出动画一开始是缩小的，量出来偏小会让菜单超出窗口
+    const width = ref.current.offsetWidth
+    const height = ref.current.offsetHeight
     setPos({
-      x: Math.max(6, Math.min(menu.x, window.innerWidth - width - 6)),
+      x: Math.max(20, Math.min(menu.x, window.innerWidth - width - 20)),
       y: Math.max(6, Math.min(menu.y, window.innerHeight - height - 6))
     })
   }, [menu])

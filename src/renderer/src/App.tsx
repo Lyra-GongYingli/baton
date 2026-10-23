@@ -5,17 +5,32 @@ import { ProcessView } from './board/ProcessView'
 import { ProjectView } from './board/ProjectView'
 import { CopyFlash } from './components/Copy'
 import { StatusMenuHost } from './components/StatusMenu'
+import { DockMonth } from './dock/DockMonth'
 import { Toast, toast } from './dock/parts'
 import { cx } from './util'
+import { Dashboard } from './views/Dashboard'
 import { NewTaskDialog } from './views/NewTaskDialog'
 import { Settings } from './views/Settings'
 import { TaskView } from './views/TaskView'
 
-export type View = { type: 'projects' } | { type: 'process' } | { type: 'settings' } | { type: 'task'; id: string }
+export type View =
+  | { type: 'home' }
+  | { type: 'projects' }
+  | { type: 'process' }
+  | { type: 'month'; day?: string }
+  | { type: 'settings' }
+  | { type: 'task'; id: string }
+
+const NAV: { type: 'home' | 'projects' | 'process' | 'month'; label: string }[] = [
+  { type: 'home', label: '总看板' },
+  { type: 'projects', label: '项目视图' },
+  { type: 'process', label: '进程视图' },
+  { type: 'month', label: '月历' }
+]
 
 /** 大窗口 */
 export function App() {
-  const [view, setView] = useState<View>({ type: 'projects' })
+  const [view, setView] = useState<View>({ type: 'home' })
   const [creating, setCreating] = useState(false)
   const [trees] = useData(() => api.listProjects(), [])
   const [settings] = useData(() => api.getSettings(), [])
@@ -40,18 +55,11 @@ export function App() {
           Baton
         </div>
         <nav className="main-nav">
-          <button
-            className={cx('nav-item', view.type === 'projects' && 'active')}
-            onClick={() => setView({ type: 'projects' })}
-          >
-            项目视图
-          </button>
-          <button
-            className={cx('nav-item', view.type === 'process' && 'active')}
-            onClick={() => setView({ type: 'process' })}
-          >
-            进程视图
-          </button>
+          {NAV.map((n) => (
+            <button key={n.type} className={cx('nav-item', view.type === n.type && 'active')} onClick={() => setView({ type: n.type })}>
+              {n.label}
+            </button>
+          ))}
         </nav>
 
         <div className="thread-groups">
@@ -89,10 +97,20 @@ export function App() {
             {trees && <ProjectView wide trees={trees} onOpenTask={open} />}
           </div>
         )}
+        {view.type === 'home' && <Dashboard onOpenTask={open} onOpenDay={(day) => setView({ type: 'month', day })} />}
         {view.type === 'process' && <ProcessPage onOpenTask={open} />}
+        {view.type === 'month' && (
+          <div className="page wide">
+            <header className="page-header">
+              <h1>月历</h1>
+              <p className="muted">子任务安排在哪天做。按住拖到某一天就排到那天，拖回「待安排」就取消；点一下打开任务，双击复制提示词。</p>
+            </header>
+            <DockMonth key={view.day ?? 'now'} wide initialDay={view.day} onOpenTask={open} />
+          </div>
+        )}
         {view.type === 'settings' && <Settings />}
         {view.type === 'task' && (
-          <TaskView key={view.id} id={view.id} onDeleted={() => setView({ type: 'projects' })} />
+          <TaskView key={view.id} id={view.id} onDeleted={() => setView({ type: 'home' })} />
         )}
       </main>
 

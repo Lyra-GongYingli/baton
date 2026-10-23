@@ -8,6 +8,7 @@ import {
   type CollisionDetection
 } from '@dnd-kit/core'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { dayLabel } from '../../../shared/dates'
 import { STATUS_LABEL, type LineState, type Status, type TaskDetail } from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
 import { TaskBody } from '../board/TaskBody'
@@ -43,7 +44,7 @@ type Flash = { key: string; text: string; id: number }
 /** 被拖动的东西：一张任务卡，或便签上的一个任务 */
 type Dragged = { taskId: string; title: string; color: string }
 /** 便签上的一行 */
-type NoteEntry = { id: string; title: string; color: string; projectTitle: string; status: Status }
+type NoteEntry = { id: string; title: string; color: string; projectTitle: string; status: Status; from?: string }
 
 // 窗口的空白处要让点击穿过去，鼠标进到卡片上时才接住
 let interactive = false
@@ -145,7 +146,8 @@ export function LineApp() {
       title: t.title,
       color: t.color,
       projectTitle: t.projectTitle,
-      status: t.status
+      status: t.status,
+      from: t.span?.from
     }))
   ].map((e) => ({ ...e, status: moved[e.id] ?? e.status }))
   const cards = entries.filter((e) => e.status === 'active' && e.detail).map((e) => e.detail as TaskDetail)
@@ -385,7 +387,8 @@ function NoteItem({
       }
     >
       <i />
-      {entry.title}
+      <span className="line-note-title">{entry.title}</span>
+      {entry.from && entry.status !== 'done' && <span className="line-note-date-tag">{dayLabel(entry.from)}</span>}
     </div>
   )
 }

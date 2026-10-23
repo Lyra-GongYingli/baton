@@ -28,7 +28,7 @@ const INSTRUCTIONS = `Baton 是用户的任务接力工具，用来管理同时�
 - 先用 list_projects 或 search 找到 id，再用 get_task 看细节。
 - 用户让你「记到 Baton / 加个任务 / 拆一下」时，用 create_task、add_subtasks。
 - 你开始做某个子任务或子子任务时，用 update_subtask 把 status 设成 active（子任务顺便把 agent 设成你自己）；做完设成 done。
-- 子任务可以安排在某一天做（scheduled_on，YYYY-MM-DD），用户在 Baton 的月历里看。用 calendar 查某段日子安排了什么。
+- 子任务都有「哪天做」（scheduled_on，YYYY-MM-DD），新建时不指定就排在今天；用户在 Baton 的月历、任务卡片上看。用 calendar 查某段日子安排了什么，用 update_subtask 改日子。
 - 上一层的状态会跟着下一层自动变化（任务跟子任务，子任务跟子子任务），一般不用手动改；把某一层标成 done 会连带下面的全部完成。`
 
 const status = z
@@ -110,6 +110,8 @@ function buildServer(onChange: (summary: string) => void): McpServer {
             title: t.title,
             status: `${t.status}（${STATUS_LABEL[t.status]}）`,
             progress: `${t.subtaskDone}/${t.subtaskTotal}`,
+            dates: t.span ? { from: t.span.from, to: t.span.to, overdue: t.span.overdue } : null,
+            unscheduled: t.unscheduled,
             current: t.current
               ? `S${t.current.ref} ${t.current.title}（${STATUS_LABEL[t.current.status]}，${agentName(t.current.agent)}）`
               : null
@@ -303,6 +305,11 @@ function buildServer(onChange: (summary: string) => void): McpServer {
     prompt: z.string().optional(),
     agent: agent.optional(),
     chained: z.boolean().optional().describe('true = 接力：接着上一个子任务做，上一个完成后才轮到它'),
+    scheduled_on: z
+      .string()
+      .regex(/^(\d{4}-\d{2}-\d{2})?$/)
+      .optional()
+      .describe('哪天做，本地日期 YYYY-MM-DD；不传就排在今天，传空字符串表示先不排'),
     children: z.array(childInput).optional().describe('这个子任务下面的子子任务')
   })
 
@@ -327,7 +334,8 @@ function buildServer(onChange: (summary: string) => void): McpServer {
           prompt: item.prompt,
           parentId: args.parent_subtask_id,
           agent: args.parent_subtask_id || !item.agent ? undefined : toAssignee(item.agent),
-          chained: item.chained
+          chained: item.chained,
+          scheduledOn: args.parent_subtask_id ? undefined : item.scheduled_on
         })
         for (const c of item.children ?? []) {
           db.createSubtask(args.task_id, { title: c.title, prompt: c.prompt, parentId: id })

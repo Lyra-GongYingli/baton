@@ -162,6 +162,7 @@ const handlers: Handlers = {
   processBoard: db.processBoard,
   calendar: db.calendar,
   lineBoard: db.lineBoard,
+  dashboard: db.dashboard,
   assignSubtask: db.assignSubtask,
 
   getSettings: () => ({

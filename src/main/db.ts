@@ -1,11 +1,14 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
+import { AGENTS } from '../shared/agents'
 import { pickColor } from '../shared/colors'
+import { today as todayStr } from '../shared/dates'
 import { expandPrompt, previousOf, referencedSubtasks } from '../shared/prompt'
 import type {
   Assignee,
   CalendarBoard,
   CalendarItem,
+  Dashboard,
   LineBoard,
   ProcessBoard,
   Project,
@@ -64,6 +67,7 @@ CREATE TABLE IF NOT EXISTS subtasks (
   notes      TEXT NOT NULL DEFAULT '', -- 旧版「备注」，已不再使用
   chained    INTEGER NOT NULL DEFAULT 0,
   scheduled_on TEXT NOT NULL DEFAULT '', -- 安排在哪天做，YYYY-MM-DD
+  done_at    INTEGER NOT NULL DEFAULT 0, -- 完成的时间（毫秒），没完成是 0；由触发器维护
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -90,6 +94,14 @@ CREATE TABLE IF NOT EXISTS logs (
 const INDEXES = `
 CREATE INDEX IF NOT EXISTS tasks_project ON tasks(project_id, position);
 CREATE INDEX IF NOT EXISTS subtasks_task ON subtasks(task_id, parent_id, position);
+
+-- 记下子任务完成的时间（总看板的「每天完成」靠它）。不管从界面、连带、还是 AI 改的状态都算
+CREATE TRIGGER IF NOT EXISTS subtasks_done_at AFTER UPDATE OF status ON subtasks
+WHEN NEW.status = 'done' AND OLD.status != 'done'
+BEGIN UPDATE subtasks SET done_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) WHERE id = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS subtasks_undone_at AFTER UPDATE OF status ON subtasks
+WHEN NEW.status != 'done' AND OLD.status = 'done'
+BEGIN UPDATE subtasks SET done_at = 0 WHERE id = NEW.id; END;
 `
 
 export function openDb(file: string): void {
@@ -189,6 +201,11 @@ function addMissingColumns(): void {
   }
   if (!subCols.includes('scheduled_on')) {
     db.exec("ALTER TABLE subtasks ADD COLUMN scheduled_on TEXT NOT NULL DEFAULT ''")
+  }
+  if (!subCols.includes('done_at')) {
+    db.exec('ALTER TABLE subtasks ADD COLUMN done_at INTEGER NOT NULL DEFAULT 0')
+    // 以前完成的没有记时间，拿最后修改时间凑合
+    db.exec("UPDATE subtasks SET done_at = updated_at WHERE status = 'done'")
   }
 }
 
@@ -319,9 +336,12 @@ export function listProjects(): ProjectTree[] {
   )
   const tasks = (db.prepare('SELECT * FROM tasks ORDER BY position, created_at').all() as Row[]).map(toTask)
   const subRows = db
-    .prepare("SELECT task_id, ref, title, status, agent, prompt FROM subtasks WHERE parent_id = '' ORDER BY position")
+    .prepare(
+      "SELECT id, task_id, ref, title, status, agent, prompt, scheduled_on FROM subtasks WHERE parent_id = '' ORDER BY position"
+    )
     .all() as Row[]
 
+  const now = todayStr()
   return projects.map((p) => ({
     project: p,
     tasks: tasks
@@ -329,6 +349,9 @@ export function listProjects(): ProjectTree[] {
       .map((t): TaskSummary => {
         const mine = subRows.filter((s) => s.task_id === t.id)
         const current = mine.find((s) => s.status !== 'done')
+        // 任务的时间 = 没做完的子任务排在哪几天
+        const open = mine.filter((s) => s.status !== 'done')
+        const days = open.map((s) => s.scheduled_on as string).filter(Boolean).sort()
         return {
           ...t,
           color: p.color,
@@ -337,14 +360,18 @@ export function listProjects(): ProjectTree[] {
           subtaskDone: mine.filter((s) => s.status === 'done').length,
           current: current
             ? {
+                id: current.id as string,
                 ref: Number(current.ref),
                 title: current.title as string,
                 status: current.status as Status,
-                agent: current.agent as Assignee
+                agent: current.agent as Assignee,
+                scheduledOn: current.scheduled_on as string
               }
             : null,
           statuses: mine.map((s) => s.status as Status),
-          currentPrompt: current?.prompt ? expandPrompt(String(current.prompt), t) : ''
+          currentPrompt: current?.prompt ? expandPrompt(String(current.prompt), t) : '',
+          span: days.length ? { from: days[0], to: days[days.length - 1], overdue: days[0] < now } : null,
+          unscheduled: open.length - days.length
         }
       })
   }))
@@ -442,13 +469,16 @@ export function moveTask(id: string, projectId: string, index: number): void {
 
 // ---------- 子任务 / 子子任务 ----------
 
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+
 export function createSubtask(
   taskId: string,
-  input: { title: string; prompt?: string; chained?: boolean; agent?: Assignee; parentId?: string }
+  input: { title: string; prompt?: string; chained?: boolean; agent?: Assignee; parentId?: string; scheduledOn?: string }
 ): string {
   const t = db.prepare('SELECT next_ref FROM tasks WHERE id = ?').get(taskId) as Row | undefined
   if (!t) throw new Error('任务不存在')
   const parentId = input.parentId ?? ''
+  if (input.scheduledOn && !DATE.test(input.scheduledOn)) throw new Error(`日期格式应为 YYYY-MM-DD：${input.scheduledOn}`)
   // 子子任务不占子任务的 S 编号（显示成 S1.1、S1.2，按顺序算出来）
   const ref = parentId ? 0 : Number(t.next_ref)
   const max = db
@@ -461,8 +491,8 @@ export function createSubtask(
   const id = randomUUID()
   const now = Date.now()
   db.prepare(
-    `INSERT INTO subtasks (id, task_id, parent_id, ref, position, title, status, agent, prompt, chained, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO subtasks (id, task_id, parent_id, ref, position, title, status, agent, prompt, chained, scheduled_on, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     taskId,
@@ -474,6 +504,8 @@ export function createSubtask(
     agent,
     input.prompt ?? '',
     chained ? 1 : 0,
+    // 子任务默认排在今天；子子任务是清单项，不排日子
+    parentId ? '' : (input.scheduledOn ?? todayStr()),
     now,
     now
   )
@@ -487,7 +519,6 @@ export function createSubtask(
   return id
 }
 
-const DATE = /^\d{4}-\d{2}-\d{2}$/
 
 export function updateSubtask(
   id: string,
@@ -533,7 +564,7 @@ export function arrangeSubtasks(taskId: string, layout: { id: string; parentId: 
   const touchedParents = new Set<string>()
   layout.forEach(({ id, parentId }, i) => {
     const row = db
-      .prepare('SELECT parent_id, ref, status FROM subtasks WHERE id = ? AND task_id = ?')
+      .prepare('SELECT parent_id, ref, status, scheduled_on FROM subtasks WHERE id = ? AND task_id = ?')
       .get(id, taskId) as Row | undefined
     if (!row) return
     const cols: Record<string, SQLInputValue> = { position: i, parent_id: parentId }
@@ -542,6 +573,7 @@ export function arrangeSubtasks(taskId: string, layout: { id: string; parentId: 
       if (!parentId) {
         if (!Number(row.ref)) cols.ref = nextRef++
         cols.chained = 0
+        if (!row.scheduled_on) cols.scheduled_on = todayStr()
       } else {
         // 变成子子任务：只是清单项，不接力、不分人、不排日子
         cols.chained = 0
@@ -670,5 +702,131 @@ export function lineBoard(): LineBoard {
     todo: tasks.filter((t) => t.status === 'todo'),
     paused: tasks.filter((t) => t.status === 'paused').sort(recent),
     done: tasks.filter((t) => t.status === 'done' && t.updatedAt >= today.getTime()).sort(recent)
+  }
+}
+
+// ---------- 总看板 ----------
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+/** 本地日期 → YYYY-MM-DD */
+function ymd(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+
+function addDays(d: Date, n: number): Date {
+  const x = new Date(d)
+  x.setDate(x.getDate() + n)
+  return x
+}
+
+/** 这一天所在那周的周一 0 点 */
+function mondayOf(d: Date): Date {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7))
+  return x
+}
+
+const zero = (): Record<Status, number> => ({ todo: 0, active: 0, paused: 0, done: 0 })
+
+/** 只算子任务（不算子子任务）：子子任务是清单项，算进去会把忙闲放大 */
+export function dashboard(): Dashboard {
+  const now = new Date()
+  const today = ymd(now)
+  const monday = mondayOf(now)
+  const weekStart = ymd(monday)
+  const weekEnd = ymd(addDays(monday, 6))
+  // 热力图：往前 17 周、往后 8 周，一共 26 周
+  const heatStart = addDays(monday, -17 * 7)
+  const heatFrom = ymd(heatStart)
+  const heatTo = ymd(addDays(monday, 8 * 7 + 6))
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+
+  const scheduled: Record<string, number> = {}
+  for (const r of db
+    .prepare(
+      "SELECT scheduled_on AS day, COUNT(*) AS n FROM subtasks WHERE parent_id = '' AND scheduled_on BETWEEN ? AND ? GROUP BY scheduled_on"
+    )
+    .all(heatFrom, heatTo) as Row[]) {
+    scheduled[r.day as string] = Number(r.n)
+  }
+
+  // 每天完成：done_at 换成本地日期再数；顺便数每周
+  const twelveWeeksAgo = addDays(monday, -11 * 7)
+  const since = Math.min(heatStart.getTime(), twelveWeeksAgo.getTime())
+  const done: Record<string, number> = {}
+  const weekly = Array.from({ length: 12 }, (_, i) => ({ week: ymd(addDays(twelveWeeksAgo, i * 7)), done: 0 }))
+  let doneToday = 0
+  let doneThisWeek = 0
+  for (const r of db
+    .prepare("SELECT done_at FROM subtasks WHERE parent_id = '' AND status = 'done' AND done_at >= ?")
+    .all(since) as Row[]) {
+    const at = new Date(Number(r.done_at))
+    const day = ymd(at)
+    done[day] = (done[day] ?? 0) + 1
+    const w = Math.floor((mondayOf(at).getTime() - twelveWeeksAgo.getTime()) / (7 * 86400000) + 0.5)
+    if (w >= 0 && w < 12) weekly[w].done++
+    if (at.getTime() >= todayStart) doneToday++
+    if (at.getTime() >= monday.getTime()) doneThisWeek++
+  }
+
+  // 项目、执行者、逾期、接下来几天：把所有任务过一遍
+  const trees = listProjects()
+  const agents = new Map<Assignee, { active: number; todo: number; paused: number }>(
+    [...AGENTS.map((a) => a.id as Assignee), '' as Assignee].map((a) => [a, { active: 0, todo: 0, paused: 0 }])
+  )
+  const overdue: CalendarItem[] = []
+  const upcoming: CalendarItem[] = []
+  const soon = ymd(addDays(now, 6))
+  let activeSubtasks = 0
+  let scheduledThisWeek = 0
+
+  const projects = trees.map(({ project, tasks }) => {
+    const taskCounts = zero()
+    const subCounts = zero()
+    for (const t of tasks) {
+      taskCounts[t.status]++
+      const detail = getTask(t.id)
+      if (!detail) continue
+      const open = t.status !== 'done'
+      for (const s of detail.subtasks) {
+        subCounts[s.status]++
+        if (s.scheduledOn >= weekStart && s.scheduledOn <= weekEnd) scheduledThisWeek++
+        if (s.status === 'done' || !open) continue
+        if (s.status === 'active' && t.status === 'active') activeSubtasks++
+        const a = agents.get(s.agent)
+        if (a) a[s.status]++
+        if (s.scheduledOn && s.scheduledOn < today) overdue.push(processItem(s, detail))
+        else if (s.scheduledOn && s.scheduledOn <= soon) upcoming.push(processItem(s, detail))
+      }
+    }
+    return { id: project.id, title: project.title, color: project.color, tasks: taskCounts, subtasks: subCounts }
+  })
+
+  overdue.sort((a, b) => a.scheduledOn.localeCompare(b.scheduledOn))
+  upcoming.sort((a, b) => a.scheduledOn.localeCompare(b.scheduledOn))
+
+  return {
+    today,
+    weekStart,
+    tiles: {
+      activeTasks: trees.reduce((n, p) => n + p.tasks.filter((t) => t.status === 'active').length, 0),
+      activeSubtasks,
+      scheduledThisWeek,
+      doneThisWeek,
+      doneToday,
+      overdue: overdue.length
+    },
+    heatFrom,
+    heatTo,
+    scheduled,
+    done,
+    weekly,
+    projects,
+    agents: [...agents.entries()].map(([agent, c]) => ({ agent, ...c })),
+    overdue,
+    upcoming
   }
 }

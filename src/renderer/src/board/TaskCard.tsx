@@ -8,7 +8,9 @@ import type { DragHandle } from '../components/Sortable'
 import { openStatusMenu } from '../components/StatusMenu'
 import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
 import { PromptPill, tiltOf, toast, Track, useDropTarget } from '../dock/parts'
-import { cx, timeAgo, titleFromText } from '../util'
+import { dayLabel } from '../../../shared/dates'
+import { DateChip } from '../components/DatePicker'
+import { cx, titleFromText } from '../util'
 
 /** 夹在洞洞板上的任务卡。单击打开，双击标题复制，按住拖动排序，把文字拖上来变成一个新子任务 */
 export function TaskCard({
@@ -77,10 +79,30 @@ export function TaskCard({
           ) : (
             <span className="muted">还没有子任务，点进来加第一个</span>
           )}
-          <span className="tcard-time">{timeAgo(t.updatedAt)}</span>
+          <TaskSpan task={t} />
         </div>
         {drop.over && <div className="tcard-drop">松手，变成一个新子任务</div>}
       </div>
     </div>
+  )
+}
+
+/**
+ * 卡片右下角：当前那个子任务（同一行左边写着的 Sx）哪天做，点一下就能改。
+ * 后面还有排得更晚的子任务时，跟一个淡淡的「→ 10/28」，告诉你整个任务排到哪天。
+ */
+export function TaskSpan({ task: t }: { task: TaskSummary }) {
+  const cur = t.current
+  if (!cur) return null
+  const later = t.span && t.span.to > (cur.scheduledOn || t.span.to) ? t.span.to : ''
+  return (
+    <span className="tcard-time" title={t.unscheduled ? `还有 ${t.unscheduled} 个子任务没排日子` : undefined}>
+      <DateChip
+        value={cur.scheduledOn}
+        title={`S${cur.ref} 哪天做：点一下改`}
+        onChange={(day) => api.updateSubtask(cur.id, { scheduledOn: day })}
+      />
+      {later && <span className="tcard-later">→ {dayLabel(later)}</span>}
+    </span>
   )
 }
