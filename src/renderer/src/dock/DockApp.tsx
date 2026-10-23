@@ -1,21 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import type { DockState } from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
-import { ProcessView } from '../board/ProcessView'
 import { ProjectView } from '../board/ProjectView'
 import { CopyFlash } from '../components/Copy'
 import { isDragging } from '../components/Sortable'
 import { cx } from '../util'
+import { DockMonth } from './DockMonth'
 import { DockTask } from './DockTask'
-import { Icon, IconButton, Toast } from './parts'
+import { Icon, IconButton, Toast, toast } from './parts'
 
-type View = 'project' | 'process'
+type View = 'project' | 'month'
 
 /** 侧边栏 */
 export function DockApp() {
   const [state, setState] = useState<DockState>()
   const [taskId, setTaskId] = useState<string | null>(null)
-  const [view, setViewState] = useState<View>(() => (localStorage.getItem('baton.view') as View) || 'project')
+  const [view, setViewState] = useState<View>(() => (localStorage.getItem('baton.view') === 'month' ? 'month' : 'project'))
   const leaveTimer = useRef(0)
   const mouseInside = useRef(false)
 
@@ -29,9 +29,11 @@ export function DockApp() {
     api.getDockState().then(setState)
     const offState = onMainEvent('dock-state', (s) => setState(s as DockState))
     const offTask = onMainEvent('dock-show-task', (id) => setTaskId(id as string))
+    const offRemote = onMainEvent('remote-change', (msg) => toast(`🤖 ${msg}`))
     return () => {
       offState()
       offTask()
+      offRemote()
     }
   }, [])
 
@@ -89,6 +91,9 @@ export function DockApp() {
             Baton
           </div>
           <div className="dock-actions">
+            <IconButton title="晾出进程：在屏幕顶上看谁在做什么" onClick={() => api.lineOpen()}>
+              <Icon.line />
+            </IconButton>
             <IconButton
               title={state?.pinned ? '取消钉住（移开鼠标会收起）' : '钉住（一直展开）'}
               active={state?.pinned}
@@ -106,19 +111,19 @@ export function DockApp() {
           <button className={cx(view === 'project' && !taskId && 'active')} onClick={() => setView('project')}>
             项目
           </button>
-          <button className={cx(view === 'process' && !taskId && 'active')} onClick={() => setView('process')}>
-            进程
+          <button className={cx(view === 'month' && !taskId && 'active')} onClick={() => setView('month')}>
+            月历
           </button>
-          <span className={cx('view-thumb', view === 'process' && 'right')} />
+          <span className={cx('view-thumb', view === 'month' && 'right')} />
         </div>
 
         <div className="dock-scroll">
           {taskId ? (
             <DockTask key={taskId} id={taskId} onBack={() => setTaskId(null)} />
           ) : view === 'project' ? (
-            <DockProjects onOpenTask={setTaskId} onShowProcess={() => setView('process')} />
+            <DockProjects onOpenTask={setTaskId} />
           ) : (
-            <DockProcess onOpenTask={setTaskId} />
+            <DockMonth onOpenTask={setTaskId} />
           )}
         </div>
         <Toast />
@@ -128,14 +133,14 @@ export function DockApp() {
   )
 }
 
-function DockProjects({ onOpenTask, onShowProcess }: { onOpenTask: (id: string) => void; onShowProcess: () => void }) {
+function DockProjects({ onOpenTask }: { onOpenTask: (id: string) => void }) {
   const [trees] = useData(() => api.listProjects(), [])
   const [board] = useData(() => api.processBoard(), [])
   if (!trees) return null
 
   const all = board ? [...board.unassigned, ...Object.values(board.lanes).flat()] : []
   const running = all.filter((i) => i.status === 'ai_running')
-  const activeCount = trees.reduce((n, t) => n + t.tasks.filter((x) => x.status === 'active').length, 0)
+  const activeCount = trees.reduce((n, t) => n + t.tasks.filter((x) => x.status === 'active' || x.status === 'todo').length, 0)
 
   return (
     <div className="dock-home">
@@ -145,7 +150,7 @@ function DockProjects({ onOpenTask, onShowProcess }: { onOpenTask: (id: string) 
       </p>
 
       {running.length > 0 && (
-        <button className="running-link" onClick={onShowProcess}>
+        <button className="running-link" onClick={() => api.lineOpen()}>
           <span className="running-dot" />
           {running.length} 个 AI 正在跑
           <span className="typing">
@@ -158,16 +163,6 @@ function DockProjects({ onOpenTask, onShowProcess }: { onOpenTask: (id: string) 
       )}
 
       {trees.length === 0 ? <EmptyBaton /> : <ProjectView trees={trees} onOpenTask={onOpenTask} />}
-    </div>
-  )
-}
-
-function DockProcess({ onOpenTask }: { onOpenTask: (id: string) => void }) {
-  const [board] = useData(() => api.processBoard(), [])
-  if (!board) return null
-  return (
-    <div className="dock-home">
-      <ProcessView board={board} onOpenTask={onOpenTask} />
     </div>
   )
 }

@@ -1,66 +1,252 @@
-import { useState, type CSSProperties } from 'react'
+import { DndContext, DragOverlay, MeasuringStrategy, closestCenter } from '@dnd-kit/core'
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { nextStatus } from '../../../shared/agents'
 import { expandPrompt, previousOf } from '../../../shared/prompt'
 import { STATUS_LABEL, type Subtask, type TaskDetail } from '../../../shared/types'
 import { api } from '../api'
 import { AgentPicker } from '../components/AgentPicker'
 import { InlineEdit, renderPrompt } from '../components/InlineEdit'
-import { SortableList, type DragHandle } from '../components/Sortable'
-import { PromptPill, toast, useDropTarget } from '../dock/parts'
+import { PromptBox } from '../components/PromptBox'
+import { markDragging, useDndSensors, type DragHandle } from '../components/Sortable'
+import { toast, useDropTarget } from '../dock/parts'
 import { cx, titleFromText } from '../util'
 
-// 子任务 list：每一行是一个子任务 + 它的提示词，下面可以挂一串子子任务。
+// 子任务 list：子任务和它下面的子子任务排成一棵两层的树。
 //   接力子任务（chained）——和上一个用实线连着，圆形节点，上一个完成后才轮到它
 //   独立子任务 ——和上一个断开，方形节点，随时可以做
-// 标题、提示词点一下就能改，双击复制；两行之间的连接处点一下接上 / 断开；整行按住拖动排序。
+// 任何一行都能按住拖：上下拖换位置，拖的时候往右挪 = 变成上面那个子任务的子子任务，往左挪 = 提出来变成子任务。
+// 带着子子任务的子任务被拖动时，子子任务跟着走；它不能再被放进别的子任务里（最多两层）。
+
+/** 往右拖多少像素算缩进一层 */
+const INDENT = 28
+
+interface Slot {
+  id: string
+  depth: 0 | 1
+}
+
+interface Row extends Slot {
+  parentId: string
+  sub: Subtask
+  hasChildren: boolean
+}
+
+function slotsOf(subtasks: Subtask[]): Slot[] {
+  return subtasks.flatMap((s) => [
+    { id: s.id, depth: 0 as const },
+    ...s.children.map((c) => ({ id: c.id, depth: 1 as const }))
+  ])
+}
+
+/** 按从上到下的顺序算出每一行挂在谁下面 */
+function withParents(slots: Slot[]): { id: string; depth: 0 | 1; parentId: string }[] {
+  let parent = ''
+  return slots.map((s) => {
+    if (s.depth === 0) parent = s.id
+    return { ...s, parentId: s.depth === 0 ? '' : parent }
+  })
+}
+
+/** 拖到 over 上、横向挪了 offsetX 时，松手会落在第几层 */
+function projectDepth(rows: Row[], activeId: string, overId: string, offsetX: number): 0 | 1 {
+  const activeIndex = rows.findIndex((r) => r.id === activeId)
+  const overIndex = rows.findIndex((r) => r.id === overId)
+  const active = rows[activeIndex]
+  const moved = arrayMove(rows, activeIndex, overIndex)
+  const prev = moved[overIndex - 1]
+  const next = moved[overIndex + 1]
+  const wanted = active.depth + Math.round(offsetX / INDENT)
+  // 最上面那行、或者自己带着子子任务的，只能当子任务
+  const max = !prev || active.hasChildren ? 0 : 1
+  // 插在两个子子任务中间，就只能当子子任务
+  const min = next?.depth === 1 && !active.hasChildren ? 1 : 0
+  return Math.max(min, Math.min(max, wanted)) as 0 | 1
+}
 
 export function SubtaskRoute({ detail }: { detail: TaskDetail }) {
   const { subtasks, task } = detail
-  const currentId = subtasks.find((s) => s.status !== 'done')?.id
+  const sensors = useDndSensors()
+
+  // 本地先排好结构，松手后立刻生效；数据刷新回来后以数据为准
+  const dataSlots = slotsOf(subtasks)
+  const key = dataSlots.map((s) => `${s.id}:${s.depth}`).join('|')
+  const [slots, setSlots] = useState(dataSlots)
+  useEffect(() => setSlots(slotsOf(subtasks)), [key])
+
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
+  const [offsetX, setOffsetX] = useState(0)
+  const [adding, setAdding] = useState<string | null>(null)
+
+  const byId = new Map<string, Subtask>(subtasks.flatMap((s) => [[s.id, s] as const, ...s.children.map((c) => [c.id, c] as const)]))
+  const rows: Row[] = withParents(slots).flatMap((s, i, all) => {
+    const sub = byId.get(s.id)
+    if (!sub) return []
+    return [{ ...s, sub, hasChildren: s.depth === 0 && all[i + 1]?.depth === 1 }]
+  })
+  // 拖着子任务时，把它的子子任务先藏起来，松手后跟着它走
+  const visible = activeId ? rows.filter((r) => r.parentId !== activeId) : rows
+  const projected = activeId && overId ? projectDepth(visible, activeId, overId, offsetX) : null
+
+  const topLevel = rows.filter((r) => r.depth === 0).map((r) => r.sub)
+  const currentId = topLevel.find((s) => s.status !== 'done')?.id
+
+  const reset = (): void => {
+    markDragging(false)
+    setActiveId(null)
+    setOverId(null)
+    setOffsetX(0)
+  }
+
+  const drop = (overRowId: string | null): void => {
+    if (!activeId || !overRowId || projected === null) return
+    const activeIndex = visible.findIndex((r) => r.id === activeId)
+    const overIndex = visible.findIndex((r) => r.id === overRowId)
+    const moved: Slot[] = arrayMove(visible, activeIndex, overIndex).map((r) => ({
+      id: r.id,
+      depth: r.id === activeId ? projected : r.depth
+    }))
+    const kids = rows.filter((r) => r.parentId === activeId).map((r) => ({ id: r.id, depth: r.depth }))
+    if (kids.length) moved.splice(moved.findIndex((r) => r.id === activeId) + 1, 0, ...kids)
+    if (moved.map((s) => `${s.id}:${s.depth}`).join('|') === slots.map((s) => `${s.id}:${s.depth}`).join('|')) return
+    setSlots(moved)
+    api.arrangeSubtasks(
+      task.id,
+      withParents(moved).map(({ id, parentId }) => ({ id, parentId }))
+    )
+  }
+
+  const active = activeId ? rows.find((r) => r.id === activeId) : null
 
   return (
     <div className="route" style={{ '--c': detail.project.color } as CSSProperties}>
-      <SortableList
-        items={subtasks}
-        getId={(s) => s.id}
-        onReorder={(ids) => api.reorderSubtasks(task.id, ids)}
-        renderItem={(s, drag) => {
-          const index = subtasks.findIndex((x) => x.id === s.id)
-          return (
-            <Stop
-              s={s}
-              detail={detail}
-              first={index === 0}
-              startsChain={Boolean(subtasks[index + 1]?.chained)}
-              current={s.id === currentId}
-              drag={drag}
-            />
-          )
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+        onDragStart={({ active: a }) => {
+          markDragging(true)
+          setActiveId(String(a.id))
+          setOverId(String(a.id))
         }}
-      />
+        onDragMove={({ delta }) => setOffsetX(delta.x)}
+        onDragOver={({ over }) => setOverId(over ? String(over.id) : null)}
+        onDragEnd={({ over }) => {
+          drop(over ? String(over.id) : null)
+          reset()
+        }}
+        onDragCancel={reset}
+      >
+        <SortableContext items={visible.map((r) => r.id)} strategy={verticalListSortingStrategy}>
+          <div className="tree">
+            {visible.map((r, i) => {
+              const isLastOfGroup = visible[i + 1]?.depth !== 1
+              const groupParent = r.depth === 0 ? r.id : r.parentId
+              const parent = r.depth === 1 ? byId.get(r.parentId) : undefined
+              const siblings = rows.filter((x) => x.parentId === r.parentId && x.depth === 1)
+              return (
+                <div key={r.id} className="tree-slot">
+                  <TreeRow
+                    row={r}
+                    depth={r.id === activeId && projected !== null ? projected : r.depth}
+                    detail={detail}
+                    topLevel={topLevel}
+                    current={r.id === currentId}
+                    label={parent ? `S${parent.ref}.${siblings.findIndex((x) => x.id === r.id) + 1}` : ''}
+                    onAddChild={() => setAdding(r.id)}
+                  />
+                  {adding === groupParent && isLastOfGroup && r.id !== activeId && (
+                    <AddChild parent={byId.get(groupParent)!} onDone={() => setAdding(null)} />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </SortableContext>
+        <DragOverlay dropAnimation={null}>
+          {active && (
+            <div className="tree-preview">
+              <span className="ref">{active.depth === 0 ? `S${active.sub.ref}` : '·'}</span>
+              {active.sub.title}
+              {active.hasChildren && <span className="muted">＋{active.sub.children.length} 个子子任务</span>}
+              <span className="tree-preview-hint">{projected === 1 ? '→ 放进上面的子任务' : '→ 作为子任务'}</span>
+            </div>
+          )}
+        </DragOverlay>
+      </DndContext>
       <AddStop taskId={task.id} hasAny={subtasks.length > 0} />
     </div>
+  )
+}
+
+function TreeRow({
+  row,
+  depth,
+  detail,
+  topLevel,
+  current,
+  label,
+  onAddChild
+}: {
+  row: Row
+  depth: 0 | 1
+  detail: TaskDetail
+  topLevel: Subtask[]
+  current: boolean
+  label: string
+  onAddChild: () => void
+}) {
+  const { setNodeRef, transform, transition, attributes, listeners, isDragging } = useSortable({ id: row.id })
+  const drag: DragHandle = {
+    setNodeRef,
+    style: { transform: CSS.Translate.toString(transform), transition },
+    attributes,
+    listeners,
+    isDragging
+  }
+  // 被拖着的那一行变成一条插入线，缩进表示松手后落在哪一层
+  if (isDragging) {
+    return <div ref={setNodeRef} style={drag.style} className={cx('tree-indicator', depth === 1 && 'nested')} />
+  }
+  if (row.depth === 1) return <ChildRow c={row.sub} label={label} detail={detail} drag={drag} />
+  const index = topLevel.findIndex((s) => s.id === row.id)
+  return (
+    <Stop
+      s={row.sub}
+      detail={detail}
+      siblings={topLevel}
+      first={index === 0}
+      startsChain={Boolean(topLevel[index + 1]?.chained)}
+      current={current}
+      drag={drag}
+      onAddChild={onAddChild}
+    />
   )
 }
 
 function Stop({
   s,
   detail,
+  siblings,
   first,
   startsChain,
   current,
-  drag
+  drag,
+  onAddChild
 }: {
   s: Subtask
   detail: TaskDetail
+  siblings: Subtask[]
   first: boolean
   /** 下一个子任务接着它做：它是一条接力链的起点，也画成圆形 */
   startsChain: boolean
   current: boolean
   drag: DragHandle
+  onAddChild: () => void
 }) {
-  const [adding, setAdding] = useState(false)
-  const prev = previousOf(s, detail.subtasks)
+  const prev = previousOf(s, siblings)
   const chained = s.chained && !first
   const waiting = prev && prev.status !== 'done'
   const busy = s.status === 'ai_running' || s.status === 'doing'
@@ -81,7 +267,6 @@ function Stop({
         `s-${s.status}`,
         chained || startsChain ? 'chained' : 'solo',
         current && 'current',
-        drag.isDragging && 'lifted',
         drop.over && 'drop-over'
       )}
       {...drop.props}
@@ -127,32 +312,18 @@ function Stop({
             )}
           </div>
 
-          <InlineEdit
-            multiline
-            className="prompt-field"
+          <PromptBox
             value={s.prompt}
             placeholder="点这里填提示词…"
             copyText={expandPrompt(s.prompt, detail.task)}
-            render={renderPrompt}
             onSave={(prompt) => api.updateSubtask(s.id, { prompt })}
           />
-
-          {s.prompt && (
-            <div className="stop-actions">
-              <PromptPill compact label="复制提示词" text={expandPrompt(s.prompt, detail.task)} />
-            </div>
-          )}
           {drop.over && <div className="stop-drop">加一个 S{s.ref} 的子子任务</div>}
         </div>
 
         <div className="stop-side">
           <AgentPicker value={s.agent} busy={busy} onChange={(agent) => api.assignSubtask(s.id, agent)} />
-          <button
-            className="row-add"
-            title="加子子任务"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => setAdding(true)}
-          >
+          <button className="row-add" title="加子子任务" onPointerDown={(e) => e.stopPropagation()} onClick={onAddChild}>
             ＋
           </button>
           <button
@@ -168,78 +339,21 @@ function Stop({
           </button>
         </div>
       </div>
-
-      {(s.children.length > 0 || adding) && (
-        <Children parent={s} detail={detail} adding={adding} onDoneAdding={() => setAdding(false)} />
-      )}
     </div>
   )
 }
 
-/** 子子任务清单：勾选框 + 标题 + 提示词，可以拖动排序 */
-function Children({
-  parent,
-  detail,
-  adding,
-  onDoneAdding
-}: {
-  parent: Subtask
-  detail: TaskDetail
-  adding: boolean
-  onDoneAdding: () => void
-}) {
-  const [title, setTitle] = useState('')
-  return (
-    <div className="children">
-      <SortableList
-        items={parent.children}
-        getId={(c) => c.id}
-        onReorder={(ids) => api.reorderSubtasks(parent.taskId, ids)}
-        renderItem={(c, drag) => (
-          <ChildRow c={c} label={`S${parent.ref}.${parent.children.indexOf(c) + 1}`} detail={detail} drag={drag} />
-        )}
-      />
-      {adding && (
-        <div className="child add">
-          <span className="child-check" />
-          <input
-            autoFocus
-            value={title}
-            placeholder="子子任务，回车继续加，esc 结束"
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => !title.trim() && onDoneAdding()}
-            onKeyDown={async (e) => {
-              if (e.key === 'Escape') onDoneAdding()
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing && title.trim()) {
-                await api.createSubtask(parent.taskId, { parentId: parent.id, title })
-                setTitle('')
-              }
-            }}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
+/** 子子任务：勾选框 + 标题 + 提示词 */
 function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detail: TaskDetail; drag: DragHandle }) {
   const done = c.status === 'done'
-  const prompt = (
-    <InlineEdit
-      multiline
-      className={cx('prompt-field', 'mini')}
-      value={c.prompt}
-      placeholder="＋ 提示词"
-      copyText={expandPrompt(c.prompt, detail.task)}
-      render={renderPrompt}
-      onSave={(value) => api.updateSubtask(c.id, { prompt: value })}
-    />
-  )
+  const savePrompt = (value: string): void => {
+    api.updateSubtask(c.id, { prompt: value })
+  }
   return (
     <div
       ref={drag.setNodeRef}
       style={drag.style}
-      className={cx('child', done && 'done', drag.isDragging && 'lifted')}
+      className={cx('child', done && 'done')}
       {...drag.attributes}
       {...drag.listeners}
     >
@@ -256,11 +370,27 @@ function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detai
           <span className="ref">{label}</span>
           <InlineEdit value={c.title} placeholder="子子任务名" onSave={(title) => api.updateSubtask(c.id, { title })} />
           {/* 没填提示词时，「＋ 提示词」跟在标题后面，不多占一行 */}
-          {!c.prompt && prompt}
+          {!c.prompt && (
+            <InlineEdit
+              multiline
+              className="prompt-field mini"
+              value=""
+              placeholder="＋ 提示词"
+              render={renderPrompt}
+              onSave={savePrompt}
+            />
+          )}
         </div>
-        {c.prompt && prompt}
+        {c.prompt && (
+          <PromptBox
+            mini
+            value={c.prompt}
+            placeholder="＋ 提示词"
+            copyText={expandPrompt(c.prompt, detail.task)}
+            onSave={savePrompt}
+          />
+        )}
       </div>
-      {c.prompt && <PromptPill compact label="复制" text={expandPrompt(c.prompt, detail.task)} />}
       <button
         className="row-del"
         title="删除这个子子任务"
@@ -271,6 +401,29 @@ function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detai
       >
         ×
       </button>
+    </div>
+  )
+}
+
+function AddChild({ parent, onDone }: { parent: Subtask; onDone: () => void }) {
+  const [title, setTitle] = useState('')
+  return (
+    <div className="child add">
+      <span className="child-check" />
+      <input
+        autoFocus
+        value={title}
+        placeholder="子子任务，回车继续加，esc 结束"
+        onChange={(e) => setTitle(e.target.value)}
+        onBlur={() => !title.trim() && onDone()}
+        onKeyDown={async (e) => {
+          if (e.key === 'Escape') onDone()
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing && title.trim()) {
+            await api.createSubtask(parent.taskId, { parentId: parent.id, title })
+            setTitle('')
+          }
+        }}
+      />
     </div>
   )
 }

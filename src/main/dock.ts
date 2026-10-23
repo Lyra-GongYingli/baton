@@ -11,9 +11,10 @@ export const PANEL_W = 384
 /** 面板四周留给阴影的透明边距，和界面 CSS 里的 --dock-margin 一致 */
 export const PANEL_MARGIN = 14
 const HANDLE_W = 34
-const HANDLE_H = 184
+/** 把手 + 上面的晾衣绳小圆钮 */
+const HANDLE_H = 216
 
-interface Deps {
+export interface Deps {
   load: (win: BrowserWindow, hash: string) => void
   webPreferences: BrowserWindowConstructorOptions['webPreferences']
 }
@@ -25,7 +26,7 @@ let openedByHover = false
 let hideTimer: NodeJS.Timeout | null = null
 let dragStartY = 0
 
-const floating: BrowserWindowConstructorOptions = {
+export const floating: BrowserWindowConstructorOptions = {
   frame: false,
   transparent: true,
   hasShadow: false,
@@ -41,7 +42,7 @@ const floating: BrowserWindowConstructorOptions = {
   backgroundColor: '#00000000'
 }
 
-function workArea(): Rectangle {
+export function workArea(): Rectangle {
   return screen.getPrimaryDisplay().workArea
 }
 
@@ -66,7 +67,7 @@ function handleBounds(top?: number): Rectangle {
   }
 }
 
-function makeFloating(win: BrowserWindow): void {
+export function makeFloating(win: BrowserWindow): void {
   win.setAlwaysOnTop(true, 'floating')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 }

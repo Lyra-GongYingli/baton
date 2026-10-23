@@ -1,11 +1,10 @@
 import type { CSSProperties } from 'react'
 import { expandPrompt } from '../../../shared/prompt'
-import { TASK_STATUS_LABEL, type TaskStatus } from '../../../shared/types'
 import { api, useData } from '../api'
 import { SubtaskRoute } from '../board/SubtaskRoute'
 import { Editable } from '../components/Editable'
-import { InlineEdit, renderPrompt } from '../components/InlineEdit'
-import { PromptPill } from '../dock/parts'
+import { PromptBox } from '../components/PromptBox'
+import { TaskStatusPicker } from '../components/TaskStatusPicker'
 
 /** 大窗口里的任务：所有字段都能编辑 */
 export function TaskView({ id, onDeleted }: { id: string; onDeleted: () => void }) {
@@ -43,17 +42,7 @@ export function TaskView({ id, onDeleted }: { id: string; onDeleted: () => void 
       <header className="thread-header">
         <Editable className="thread-title" value={task.title} onSave={(title) => api.updateTask(task.id, { title })} />
         <div className="thread-header-actions">
-          <select
-            className="select"
-            value={task.status}
-            onChange={(e) => api.updateTask(task.id, { status: e.target.value as TaskStatus })}
-          >
-            {(Object.keys(TASK_STATUS_LABEL) as TaskStatus[]).map((s) => (
-              <option key={s} value={s}>
-                {TASK_STATUS_LABEL[s]}
-              </option>
-            ))}
-          </select>
+          <TaskStatusPicker taskId={task.id} value={task.status} />
           <button className="btn ghost danger" onClick={remove}>
             删除
           </button>
@@ -85,20 +74,12 @@ export function TaskView({ id, onDeleted }: { id: string; onDeleted: () => void 
 
       <section className="task-prompt">
         <h2 className="section-title">任务提示词</h2>
-        <InlineEdit
-          multiline
-          className="prompt-field"
+        <PromptBox
           value={task.prompt}
           placeholder="点这里填这个任务的提示词…"
           copyText={expandPrompt(task.prompt, task)}
-          render={renderPrompt}
           onSave={(prompt) => api.updateTask(task.id, { prompt })}
         />
-        {task.prompt && (
-          <div className="stop-actions">
-            <PromptPill compact label="复制任务提示词" text={expandPrompt(task.prompt, task)} />
-          </div>
-        )}
       </section>
 
       <section>
@@ -115,7 +96,7 @@ export function TaskView({ id, onDeleted }: { id: string; onDeleted: () => void 
           <SubtaskRoute detail={detail} />
         </div>
         <p className="muted small route-tip">
-          提示词点一下就能写，双击复制。整行按住可以拖动排序，两行之间的连接处点一下接上或断开，「＋ 子子任务」可以往下再拆一层。
+          提示词点一下就能写，双击复制。整行按住可以拖动排序，两行之间的连接处点一下接上或断开；鼠标移到子任务上，右侧的「＋」可以往下再拆一层子子任务。
         </p>
       </section>
     </div>

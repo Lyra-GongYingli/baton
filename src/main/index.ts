@@ -13,7 +13,10 @@ import {
 import { join } from 'node:path'
 import type { BatonApi, MainEvent } from '../shared/types'
 import * as db from './db'
+import { claudeCodeStatus, connectClaudeCode } from './claudeCode'
 import * as dock from './dock'
+import * as line from './line'
+import * as mcp from './mcp'
 import * as settings from './settings'
 
 let mainWindow: BrowserWindow | null = null
@@ -155,13 +158,17 @@ const handlers: Handlers = {
 
   createSubtask: db.createSubtask,
   updateSubtask: db.updateSubtask,
-  reorderSubtasks: db.reorderSubtasks,
+  arrangeSubtasks: db.arrangeSubtasks,
   deleteSubtask: db.deleteSubtask,
 
   processBoard: db.processBoard,
+  calendar: db.calendar,
   assignSubtask: db.assignSubtask,
 
-  getSettings: settings.getPublicSettings,
+  getSettings: () => ({
+    ...settings.getPublicSettings(),
+    mcp: { url: mcp.MCP_URL, token: settings.getMcpToken(), ...mcp.mcpState() }
+  }),
   setCurrentTask: (id) => {
     settings.setCurrentTask(id)
     broadcast('data-changed')
@@ -170,7 +177,10 @@ const handlers: Handlers = {
   copyText: (text) => clipboard.writeText(text),
   showDataDir: () => shell.showItemInFolder(join(app.getPath('userData'), 'baton.db')),
 
-  dockOpen: (opts) => dock.setDockOpen(true, opts),
+  dockOpen: (opts) => {
+    line.setLineOpen(false)
+    dock.setDockOpen(true, opts)
+  },
   dockClose: (opts) => {
     if (opts?.force || !settings.getDock().pinned) dock.setDockOpen(false)
   },
@@ -180,6 +190,13 @@ const handlers: Handlers = {
   setDockSide: dock.setSide,
   setDockHoverOpen: dock.setHoverOpen,
   moveHandle: dock.moveHandle,
+  lineToggle: line.toggleLine,
+  lineOpen: () => line.setLineOpen(true),
+  lineClose: () => line.setLineOpen(false),
+  lineClosed: line.finishLineClose,
+  lineInteractive: line.setLineInteractive,
+  claudeCodeStatus,
+  connectClaudeCode: () => connectClaudeCode(mcp.MCP_URL, settings.getMcpToken()),
   openMainWindow: (taskId) => {
     showMainWindow(taskId)
     if (!settings.getDock().pinned) dock.setDockOpen(false)
@@ -198,7 +215,7 @@ const MUTATIONS = new Set<keyof BatonApi>([
   'moveTask',
   'createSubtask',
   'updateSubtask',
-  'reorderSubtasks',
+  'arrangeSubtasks',
   'deleteSubtask',
   'assignSubtask'
 ])
@@ -234,6 +251,12 @@ if (!app.requestSingleInstanceLock()) {
     app.dock?.hide()
     db.openDb(join(app.getPath('userData'), 'baton.db'))
     dock.createDock({ load: loadRenderer, webPreferences })
+    line.createLine({ load: loadRenderer, webPreferences })
+    // 让 Claude Code 等 AI 工具能直接操控 Baton；AI 改了东西就刷新界面并提示一下
+    mcp.startMcp(settings.getMcpToken(), (summary) => {
+      afterMutation()
+      broadcast('remote-change', `AI ${summary}`)
+    })
     createTray()
     registerShortcuts()
     // 第一次启动时展开侧边栏打个招呼，并写下设置文件，下次就不算第一次了
@@ -250,5 +273,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true
   })
-  app.on('will-quit', () => globalShortcut.unregisterAll())
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll()
+    mcp.stopMcp()
+  })
 }

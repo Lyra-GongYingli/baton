@@ -369,21 +369,21 @@ h2 {
 .page {
   max-width: 920px;
   margin: 0 auto;
-  padding: 40px 40px 80px;
+  padding: 28px 32px 60px;
 }
 
 .page-header {
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 .page-header h1 {
-  font-size: 22px;
+  font-size: 19px;
 }
 .page-header p {
   margin: 2px 0 0;
 }
 
 .page section {
-  margin-bottom: 28px;
+  margin-bottom: 18px;
 }
 .page .project,
 .page .lane-box {
@@ -391,10 +391,10 @@ h2 {
 }
 
 .section-title {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text-2);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -420,7 +420,7 @@ h2 {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .editable {
@@ -435,7 +435,7 @@ h2 {
 }
 
 .thread-title {
-  font-size: 22px;
+  font-size: 19px;
   font-weight: 650;
   padding: 2px 8px;
   margin-left: -8px;
@@ -451,7 +451,7 @@ h2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px 20px;
-  margin-bottom: 20px;
+  margin-bottom: 14px;
 }
 
 .meta-field {
@@ -642,7 +642,7 @@ h2 {
 }
 
 .route-card {
-  padding: 14px 16px 2px;
+  padding: 4px 0 0;
   border-radius: var(--radius);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -651,3 +651,48 @@ h2 {
   font-weight: 500;
 }
 
+
+/* 大窗口里子任务卡片直接放在页面底色上 */
+.route-card {
+  background: transparent;
+  border: none;
+}
+
+/* 设置页：MCP */
+.mcp-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 20%, transparent);
+}
+.mcp-dot.on {
+  background: var(--c-done);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-done) 20%, transparent);
+}
+.setting-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.cmd {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+.mcp-msg {
+  margin-top: 4px;
+  color: var(--accent);
+}

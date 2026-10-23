@@ -8,7 +8,7 @@ import { AgentIcon } from './AgentIcon'
 export function AgentPicker({
   value,
   onChange,
-  size = 24,
+  size = 22,
   busy,
   align = 'right'
 }: {

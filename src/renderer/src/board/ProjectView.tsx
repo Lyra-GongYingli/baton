@@ -11,7 +11,7 @@ import { useEffect, useState, type CSSProperties } from 'react'
 import { THREAD_COLORS } from '../../../shared/colors'
 import type { ProjectTree, TaskSummary } from '../../../shared/types'
 import { api } from '../api'
-import { Copyable } from '../components/Copy'
+import { InlineEdit } from '../components/InlineEdit'
 import { markDragging, useDndSensors, useSortableHandle } from '../components/Sortable'
 import { Icon } from '../dock/parts'
 import { cx } from '../util'
@@ -243,7 +243,9 @@ function ProjectSection({
           onPointerDown={(e) => e.stopPropagation()}
           onClick={cycleColor}
         />
-        <Copyable className="project-title">{project.title}</Copyable>
+        <span className="project-title">
+          <InlineEdit value={project.title} placeholder="项目名" onSave={(title) => api.updateProject(project.id, { title })} />
+        </span>
         <span className="project-count">{taskIds.length}</span>
         <div className="spacer" />
         <button

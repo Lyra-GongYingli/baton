@@ -1,0 +1,484 @@
+/* ================= 晾衣绳（屏幕顶部的进程视图） ================= */
+
+body.route-line {
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+.line-root {
+  --line-ring: rgba(255, 255, 255, 0.62);
+  --line-ring-edge: rgba(0, 0, 0, 0.07);
+  --line-rope: rgba(70, 70, 74, 0.62);
+  --line-rope-hi: rgba(255, 255, 255, 0.75);
+  --kraft: #e9d6ae;
+  --kraft-ink: #5d4523;
+  position: fixed;
+  inset: 0;
+  font-family: var(--font);
+  color: var(--text);
+}
+@media (prefers-color-scheme: dark) {
+  .line-root {
+    --line-ring: rgba(58, 58, 62, 0.7);
+    --line-ring-edge: rgba(255, 255, 255, 0.07);
+    --line-rope: rgba(214, 214, 220, 0.62);
+    --line-rope-hi: rgba(0, 0, 0, 0.55);
+    --kraft: #cdb487;
+    --kraft-ink: #3f2d12;
+  }
+}
+
+/* ---------- 绳子 ---------- */
+
+.line-rope {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+  transform-origin: 50% 0;
+}
+.line-rope path {
+  fill: none;
+  stroke: var(--line-rope);
+  stroke-width: 1.6;
+  filter: drop-shadow(0 1px 0 var(--line-rope-hi)) drop-shadow(0 3px 3px rgba(0, 0, 0, 0.18));
+}
+.phase-in .line-rope {
+  animation: line-rope-in 0.75s cubic-bezier(0.2, 0.9, 0.3, 1.25) both;
+}
+.phase-out .line-rope {
+  animation: line-rope-out 0.5s 0.12s cubic-bezier(0.5, 0, 0.75, 0) both;
+}
+
+/* ---------- 每张卡片：挂点 → 掉落/摇摆 → 鼠标碰到时晃一下 → 缩放 ---------- */
+
+.line-hanger {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+.line-swing {
+  position: absolute;
+  left: calc(var(--w) / -2);
+  top: 0;
+  width: var(--w);
+  transform-origin: 50% 0;
+}
+.phase-in .line-swing {
+  animation:
+    line-drop 1.25s calc(0.12s + var(--i) * 75ms) cubic-bezier(0.25, 0.8, 0.3, 1) both,
+    line-sway var(--sway) calc(1.4s + var(--i) * 75ms) ease-in-out infinite;
+}
+.phase-out .line-swing {
+  animation: line-lift 0.5s calc(var(--i) * 35ms) cubic-bezier(0.55, 0, 0.8, 0.2) both;
+}
+.line-wiggle {
+  transform-origin: 50% 0;
+}
+.line-wiggle:hover {
+  animation: line-wiggle 0.9s ease-out;
+}
+.is-dragging .line-wiggle:hover {
+  animation: none;
+}
+.line-scale {
+  position: relative;
+  /* 不让卡片的 margin-top 穿出来，夹子才能正好夹在绳子上 */
+  display: flow-root;
+  transform: scale(var(--s));
+  transform-origin: 50% 0;
+}
+
+.line-clip {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: -9px;
+  margin-left: -9px;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.22));
+}
+
+/* ---------- 执行者卡片 ---------- */
+
+.line-card {
+  position: relative;
+  margin-top: 19px;
+  padding: 12px 10px 8px;
+  border-radius: 18px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  box-shadow:
+    0 0 0 5px var(--line-ring),
+    0 0 0 6px var(--line-ring-edge),
+    0 24px 36px -16px rgba(0, 0, 0, 0.42),
+    0 6px 12px -6px rgba(0, 0, 0, 0.18);
+  transition:
+    transform 0.3s var(--spring),
+    box-shadow 0.2s;
+}
+.line-card.over {
+  transform: scale(1.04);
+  box-shadow:
+    0 0 0 5px var(--agent),
+    0 24px 40px -14px rgba(0, 0, 0, 0.5);
+}
+.line-card.idle {
+  opacity: 0.88;
+}
+
+.line-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 8px;
+}
+.line-card-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.line-card-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 800;
+}
+.line-card-sum {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.line-card.over .line-card-sum {
+  color: var(--agent);
+  font-weight: 700;
+}
+
+.line-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.line-more,
+.line-empty {
+  padding: 4px 4px 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.line-empty {
+  padding: 6px 4px 6px;
+  text-align: center;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: 10px;
+}
+.line-card.over .line-empty {
+  border-color: var(--agent);
+  color: var(--agent);
+}
+
+/* ---------- 一行 = 一个子任务 ---------- */
+
+.line-row-slot {
+  border-radius: 10px;
+  cursor: pointer;
+  touch-action: none;
+}
+.line-row-slot.placeholder {
+  opacity: 0.3;
+}
+.line-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 4px;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+.line-row-slot:hover .line-row {
+  background: var(--hover);
+}
+.line-row-slot.copied .line-row {
+  animation: line-row-copied 0.8s ease-out;
+}
+.line-row-bar {
+  width: 4px;
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--c);
+}
+.line-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.line-row-title,
+.line-row-crumb {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.line-row-title {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.line-row-title b {
+  margin-right: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.line-row-crumb {
+  font-size: 11px;
+  color: var(--muted);
+}
+.line-row-status,
+.line-row-copy {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.line-row-status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.line-row.s-ai_running .line-row-status {
+  color: var(--c-ai_running);
+}
+.line-row.s-ai_running .line-row-status i {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+.line-row.s-doing .line-row-status {
+  color: var(--c-doing);
+}
+.line-row.waiting .line-row-status {
+  color: var(--muted);
+}
+.line-row-copy {
+  display: none;
+  color: var(--accent);
+}
+.line-row-slot:hover .line-row-status {
+  display: none;
+}
+.line-row-slot:hover .line-row-copy {
+  display: flex;
+}
+
+/* 拖起来的那一行：像从卡片上撕下来的小纸条 */
+.line-row.slip {
+  width: 196px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 16px 28px -10px rgba(0, 0, 0, 0.45);
+  transform: rotate(-3deg);
+  cursor: grabbing;
+}
+.line-row.slip .line-row-copy {
+  display: none;
+}
+
+/* ---------- 牛皮纸吊牌 ---------- */
+
+.line-tag {
+  position: relative;
+  margin-top: 19px;
+  padding: 18px 12px 12px;
+  background: var(--kraft);
+  color: var(--kraft-ink);
+  clip-path: polygon(16px 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%, 0 16px);
+  border-radius: 0 0 10px 10px;
+}
+.line-scale:has(.line-tag) {
+  filter: drop-shadow(0 14px 14px rgba(0, 0, 0, 0.28));
+}
+.line-tag-hole {
+  position: absolute;
+  left: 50%;
+  top: 7px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.25);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.3);
+}
+.line-tag-title {
+  margin-bottom: 6px;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  text-align: center;
+  border-bottom: 1px dashed rgba(93, 69, 35, 0.45);
+  padding-bottom: 5px;
+}
+.line-tag-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+.line-tag-row b {
+  min-width: 18px;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 900;
+  text-align: right;
+}
+
+/* ---------- 「✓ 已复制」：挂在卡片下面 ---------- */
+
+.line-flash {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 12px);
+  padding: 5px 13px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #1c1c1e;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.06),
+    0 10px 22px -6px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: line-flash 1.5s cubic-bezier(0.2, 0.9, 0.3, 1.3) forwards;
+}
+@media (prefers-color-scheme: dark) {
+  .line-flash {
+    background: rgba(40, 40, 44, 0.96);
+    color: #fff;
+  }
+}
+
+/* ---------- 动画 ---------- */
+
+@keyframes line-rope-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-24px) scaleY(0.2);
+  }
+  55% {
+    opacity: 1;
+    transform: scaleY(1.3);
+  }
+  80% {
+    transform: scaleY(0.92);
+  }
+  100% {
+    transform: none;
+  }
+}
+@keyframes line-rope-out {
+  to {
+    opacity: 0;
+    transform: translateY(-24px) scaleY(0.2);
+  }
+}
+/* 从屏幕上方掉下来，被夹子拽住，前后晃几下停住 */
+@keyframes line-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-460px) rotate(-10deg);
+  }
+  34% {
+    opacity: 1;
+    transform: translateY(10px) rotate(7deg);
+  }
+  46% {
+    transform: translateY(-3px) rotate(-5deg);
+  }
+  60% {
+    transform: translateY(0) rotate(3deg);
+  }
+  74% {
+    transform: rotate(-1.6deg);
+  }
+  88% {
+    transform: rotate(0.7deg);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes line-sway {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+  25% {
+    transform: rotate(0.7deg);
+  }
+  75% {
+    transform: rotate(-0.7deg);
+  }
+}
+@keyframes line-wiggle {
+  0% {
+    transform: rotate(0);
+  }
+  18% {
+    transform: rotate(3deg);
+  }
+  40% {
+    transform: rotate(-2.2deg);
+  }
+  62% {
+    transform: rotate(1.1deg);
+  }
+  82% {
+    transform: rotate(-0.4deg);
+  }
+  100% {
+    transform: rotate(0);
+  }
+}
+@keyframes line-lift {
+  0% {
+    transform: none;
+  }
+  30% {
+    transform: translateY(12px) rotate(-2deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-460px) rotate(8deg);
+  }
+}
+@keyframes line-flash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -8px) scale(0.7);
+  }
+  14% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  82% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 4px);
+  }
+}
+@keyframes line-row-copied {
+  0% {
+    background: var(--accent-soft);
+  }
+  100% {
+    background: transparent;
+  }
+}

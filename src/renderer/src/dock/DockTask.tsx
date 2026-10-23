@@ -2,9 +2,11 @@ import { useEffect, type CSSProperties } from 'react'
 import { expandPrompt } from '../../../shared/prompt'
 import { api, useData } from '../api'
 import { SubtaskRoute } from '../board/SubtaskRoute'
-import { InlineEdit, renderPrompt } from '../components/InlineEdit'
+import { InlineEdit } from '../components/InlineEdit'
+import { PromptBox } from '../components/PromptBox'
+import { TaskStatusPicker } from '../components/TaskStatusPicker'
 import { cx, titleFromText } from '../util'
-import { Icon, PromptPill, toast, useDropTarget } from './parts'
+import { Icon, toast, useDropTarget } from './parts'
 
 /** 侧边栏里的任务：一个子任务 list，每一行填提示词 */
 export function DockTask({ id, onBack }: { id: string; onBack: () => void }) {
@@ -45,6 +47,8 @@ export function DockTask({ id, onBack }: { id: string; onBack: () => void }) {
           <span className="dtask-dot" />
           {project.title}
         </span>
+        <div className="spacer" />
+        <TaskStatusPicker taskId={task.id} value={task.status} />
       </div>
       <h2 className="dtask-title">
         <InlineEdit value={task.title} placeholder="任务名" onSave={(title) => api.updateTask(task.id, { title })} />
@@ -55,20 +59,12 @@ export function DockTask({ id, onBack }: { id: string; onBack: () => void }) {
 
       <div className="task-prompt">
         <div className="dsection-title">任务提示词</div>
-        <InlineEdit
-          multiline
-          className="prompt-field"
+        <PromptBox
           value={task.prompt}
           placeholder="点这里填这个任务的提示词…"
           copyText={expandPrompt(task.prompt, task)}
-          render={renderPrompt}
           onSave={(prompt) => api.updateTask(task.id, { prompt })}
         />
-        {task.prompt && (
-          <div className="stop-actions">
-            <PromptPill compact label="复制任务提示词" text={expandPrompt(task.prompt, task)} />
-          </div>
-        )}
       </div>
 
       <div className="dsection-title">

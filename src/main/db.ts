@@ -6,6 +6,8 @@ import { expandPrompt, previousOf, referencedSubtasks } from '../shared/prompt'
 import type {
   AgentId,
   Assignee,
+  CalendarBoard,
+  CalendarItem,
   ProcessBoard,
   ProcessItem,
   Project,
@@ -64,6 +66,7 @@ CREATE TABLE IF NOT EXISTS subtasks (
   prompt     TEXT NOT NULL DEFAULT '',
   notes      TEXT NOT NULL DEFAULT '', -- 旧版「备注」，已不再使用
   chained    INTEGER NOT NULL DEFAULT 0,
+  scheduled_on TEXT NOT NULL DEFAULT '', -- 安排在哪天做，YYYY-MM-DD
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -101,6 +104,8 @@ export function openDb(file: string): void {
   putOrphansInProject()
   // 「等我审核」这个状态去掉了，老数据算「我在做」
   db.exec("UPDATE subtasks SET status = 'doing' WHERE status = 'review'")
+  // 启动时把所有任务的状态和子任务进度对齐一次
+  for (const r of db.prepare('SELECT id FROM tasks').all() as Row[]) syncTaskStatus(r.id as string)
 }
 
 // ---------- 老数据迁移 ----------
@@ -185,6 +190,9 @@ function addMissingColumns(): void {
       }
     })
   }
+  if (!subCols.includes('scheduled_on')) {
+    db.exec("ALTER TABLE subtasks ADD COLUMN scheduled_on TEXT NOT NULL DEFAULT ''")
+  }
 }
 
 /** 没有项目的任务（比如老数据）放进「未分组」 */
@@ -238,6 +246,7 @@ function toSubtask(r: Row): Subtask {
     agent: r.agent as Assignee,
     prompt: r.prompt as string,
     chained: Boolean(r.chained),
+    scheduledOn: (r.scheduled_on as string) ?? '',
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
     children: []
@@ -246,6 +255,26 @@ function toSubtask(r: Row): Subtask {
 
 function touchTask(taskId: string): void {
   db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(Date.now(), taskId)
+}
+
+/**
+ * 任务状态跟着子任务的进度走：
+ *   子任务全部完成 → 已完成；有子任务在做 / 交给了 AI / 完成了一部分 → 进行中；都还没开始 → 待办。
+ * 「已暂停」是手动设的，不自动改；还没有子任务时保持原样。
+ */
+function syncTaskStatus(taskId: string): void {
+  const t = db.prepare('SELECT status FROM tasks WHERE id = ?').get(taskId) as Row | undefined
+  if (!t || t.status === 'paused') return
+  const subs = (
+    db.prepare("SELECT status FROM subtasks WHERE task_id = ? AND parent_id = ''").all(taskId) as Row[]
+  ).map((r) => r.status as SubtaskStatus)
+  if (subs.length === 0) return
+  const next: TaskStatus = subs.every((s) => s === 'done')
+    ? 'done'
+    : subs.some((s) => s !== 'todo')
+      ? 'active'
+      : 'todo'
+  if (next !== t.status) db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run(next, taskId)
 }
 
 function taskIdOf(id: string): string | null {
@@ -356,8 +385,8 @@ export function createTask(input: { projectId: string; title: string; goal?: str
     .prepare('SELECT COALESCE(MIN(position), 0) AS p FROM tasks WHERE project_id = ?')
     .get(input.projectId) as Row
   db.prepare(
-    `INSERT INTO tasks (id, project_id, title, goal, position, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tasks (id, project_id, title, goal, status, position, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'todo', ?, ?, ?)`
   ).run(id, input.projectId, input.title.trim() || '未命名任务', input.goal ?? '', Number(min.p) - 1, now, now)
   return id
 }
@@ -373,6 +402,13 @@ export function updateTask(
   if (patch.prompt !== undefined) cols.prompt = patch.prompt
   if (patch.status !== undefined) cols.status = patch.status
   update('tasks', id, cols)
+  // 手动把任务标成已完成：下面的子任务、子子任务一起打勾
+  if (patch.status === 'done') {
+    db.prepare("UPDATE subtasks SET status = 'done', updated_at = ? WHERE task_id = ? AND status != 'done'").run(
+      Date.now(),
+      id
+    )
+  }
 }
 
 export function deleteTask(id: string): void {
@@ -429,6 +465,7 @@ export function createSubtask(
   const chained = !parentId && Boolean(input.chained)
   const agent = parentId ? '' : (input.agent ?? '')
   const waiting = waitingForPrevious(taskId, position, chained)
+  const status: SubtaskStatus = agent ? assignedStatus(agent, 'todo', waiting) : 'todo'
   const id = randomUUID()
   const now = Date.now()
   db.prepare(
@@ -441,7 +478,7 @@ export function createSubtask(
     ref,
     position,
     input.title.trim() || (parentId ? '新子子任务' : '新子任务'),
-    agent ? assignedStatus(agent, 'todo', waiting) : 'todo',
+    status,
     agent,
     input.prompt ?? '',
     chained ? 1 : 0,
@@ -450,21 +487,31 @@ export function createSubtask(
   )
   if (parentId) touchTask(taskId)
   else db.prepare('UPDATE tasks SET next_ref = ?, updated_at = ? WHERE id = ?').run(ref + 1, now, taskId)
+  syncTaskStatus(taskId)
   return id
 }
 
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+
 export function updateSubtask(
   id: string,
-  patch: Partial<Pick<Subtask, 'title' | 'status' | 'agent' | 'prompt' | 'chained'>>
+  patch: Partial<Pick<Subtask, 'title' | 'status' | 'agent' | 'prompt' | 'chained' | 'scheduledOn'>>
 ): void {
   const cols: Record<string, SQLInputValue> = { updated_at: Date.now() }
   for (const k of ['title', 'status', 'agent', 'prompt'] as const) {
     if (patch[k] !== undefined) cols[k] = patch[k]
   }
   if (patch.chained !== undefined) cols.chained = patch.chained ? 1 : 0
+  if (patch.scheduledOn !== undefined) {
+    if (patch.scheduledOn && !DATE.test(patch.scheduledOn)) throw new Error(`日期格式应为 YYYY-MM-DD：${patch.scheduledOn}`)
+    cols.scheduled_on = patch.scheduledOn
+  }
   update('subtasks', id, cols)
   const taskId = taskIdOf(id)
-  if (taskId) touchTask(taskId)
+  if (taskId) {
+    touchTask(taskId)
+    syncTaskStatus(taskId)
+  }
 }
 
 export function assignSubtask(id: string, agent: Assignee): void {
@@ -476,17 +523,51 @@ export function assignSubtask(id: string, agent: Assignee): void {
   updateSubtask(id, { agent, status: assignedStatus(agent, r.status as SubtaskStatus, waiting) })
 }
 
-export function reorderSubtasks(taskId: string, ids: string[]): void {
-  ids.forEach((id, i) =>
-    db.prepare('UPDATE subtasks SET position = ? WHERE id = ? AND task_id = ?').run(i, id, taskId)
-  )
-  touchTask(taskId)
+/**
+ * 拖动后整体重排：layout 是从上到下的顺序，每项说明它挂在哪个子任务下面（空字符串 = 本身是子任务）。
+ * 子子任务被拖出来变成子任务时，补一个 S 编号；子任务被拖进别的子任务时，变成简单的清单项（不接力、不分配）。
+ */
+export function arrangeSubtasks(taskId: string, layout: { id: string; parentId: string }[]): void {
+  const t = db.prepare('SELECT next_ref FROM tasks WHERE id = ?').get(taskId) as Row | undefined
+  if (!t) return
+  let nextRef = Number(t.next_ref)
+  layout.forEach(({ id, parentId }, i) => {
+    const row = db
+      .prepare('SELECT parent_id, ref, status FROM subtasks WHERE id = ? AND task_id = ?')
+      .get(id, taskId) as Row | undefined
+    if (!row) return
+    const cols: Record<string, SQLInputValue> = { position: i, parent_id: parentId }
+    if (row.parent_id !== parentId) {
+      if (!parentId) {
+        if (!Number(row.ref)) cols.ref = nextRef++
+        cols.chained = 0
+      } else {
+        // 变成子子任务：只是清单项，不接力、不分人、不排日子
+        cols.chained = 0
+        cols.agent = ''
+        cols.scheduled_on = ''
+        if (row.status !== 'done') cols.status = 'todo'
+      }
+    }
+    update('subtasks', id, cols)
+  })
+  db.prepare('UPDATE tasks SET next_ref = ?, updated_at = ? WHERE id = ?').run(nextRef, Date.now(), taskId)
+  syncTaskStatus(taskId)
+}
+
+/** 子任务 / 子子任务属于哪个任务、挂在谁下面 */
+export function subtaskInfo(id: string): { taskId: string; parentId: string; title: string } | null {
+  const r = db.prepare('SELECT task_id, parent_id, title FROM subtasks WHERE id = ?').get(id) as Row | undefined
+  return r ? { taskId: r.task_id as string, parentId: r.parent_id as string, title: r.title as string } : null
 }
 
 export function deleteSubtask(id: string): void {
   const taskId = taskIdOf(id)
   db.prepare('DELETE FROM subtasks WHERE id = ? OR parent_id = ?').run(id, id)
-  if (taskId) touchTask(taskId)
+  if (taskId) {
+    touchTask(taskId)
+    syncTaskStatus(taskId)
+  }
 }
 
 // ---------- 进程视图 ----------
@@ -497,12 +578,31 @@ const LANE_ORDER: Record<SubtaskStatus, number> = { ai_running: 0, doing: 0, tod
  * 所有进行中任务里还没完成的子任务，按「谁在做」分泳道：
  * 分给某个执行者的进 TA 的泳道；没分配的「我在做」算我的，其余进「未分配」。
  */
+/** 子任务 → 进程视图 / 月历里的一张卡片 */
+function processItem(s: Subtask, detail: TaskDetail): CalendarItem {
+  const prev = previousOf(s, detail.subtasks)
+  return {
+    subtaskId: s.id,
+    ref: s.ref,
+    title: s.title,
+    status: s.status,
+    agent: s.agent,
+    taskId: detail.task.id,
+    taskTitle: detail.task.title,
+    projectTitle: detail.project.title,
+    color: detail.project.color,
+    updatedAt: s.updatedAt,
+    waitingFor: prev && prev.status !== 'done' ? prev.ref : null,
+    promptExpanded: s.prompt ? expandPrompt(s.prompt, detail.task) : '',
+    scheduledOn: s.scheduledOn
+  }
+}
+
 export function processBoard(): ProcessBoard {
   const rows = db
     .prepare(
-      `SELECT t.id AS task_id, p.title AS project_title, p.color
-       FROM tasks t JOIN projects p ON p.id = t.project_id
-       WHERE t.status = 'active'
+      `SELECT t.id AS task_id FROM tasks t JOIN projects p ON p.id = t.project_id
+       WHERE t.status IN ('todo', 'active')
        ORDER BY p.position, t.position`
     )
     .all() as Row[]
@@ -518,21 +618,7 @@ export function processBoard(): ProcessBoard {
     if (!detail) continue
     for (const s of detail.subtasks) {
       if (s.status === 'done') continue
-      const prev = previousOf(s, detail.subtasks)
-      const item: ProcessItem = {
-        subtaskId: s.id,
-        ref: s.ref,
-        title: s.title,
-        status: s.status,
-        agent: s.agent,
-        taskId: detail.task.id,
-        taskTitle: detail.task.title,
-        projectTitle: r.project_title as string,
-        color: r.color as string,
-        updatedAt: s.updatedAt,
-        waitingFor: prev && prev.status !== 'done' ? prev.ref : null,
-        promptExpanded: s.prompt ? expandPrompt(s.prompt, detail.task) : ''
-      }
+      const item = processItem(s, detail)
       if (s.agent) lanes[s.agent].push(item)
       else if (s.status === 'doing') lanes.me.push(item)
       else unassigned.push(item)
@@ -551,4 +637,35 @@ export function processBoard(): ProcessBoard {
     .get(today.getTime()) as Row
 
   return { lanes, unassigned, doneToday: Number(done.n) }
+}
+
+/** 月历：from ~ to 之间安排了的子任务，加上还没安排日子的 */
+export function calendar(from: string, to: string): CalendarBoard {
+  // 按项目、任务的顺序取：安排在这段日子里的子任务所在的任务 + 所有待办、进行中的任务
+  const rows = db
+    .prepare(
+      `SELECT t.id, t.status FROM tasks t JOIN projects p ON p.id = t.project_id
+       WHERE t.status IN ('todo', 'active')
+          OR t.id IN (SELECT task_id FROM subtasks WHERE parent_id = '' AND scheduled_on BETWEEN ? AND ?)
+       ORDER BY p.position, t.position`
+    )
+    .all(from, to) as Row[]
+
+  const items: CalendarItem[] = []
+  const unscheduled: CalendarItem[] = []
+  for (const r of rows) {
+    const detail = getTask(r.id as string)
+    if (!detail) continue
+    const open = r.status === 'todo' || r.status === 'active'
+    for (const s of detail.subtasks) {
+      if (s.scheduledOn) {
+        if (s.scheduledOn >= from && s.scheduledOn <= to) items.push(processItem(s, detail))
+      } else if (open && s.status !== 'done') {
+        unscheduled.push(processItem(s, detail))
+      }
+    }
+  }
+  // 同一天里：没做完的在前，做完的沉到后面
+  items.sort((a, b) => a.scheduledOn.localeCompare(b.scheduledOn) || Number(a.status === 'done') - Number(b.status === 'done'))
+  return { items, unscheduled }
 }

@@ -4,7 +4,7 @@ import { api, onMainEvent, useData } from './api'
 import { ProcessView } from './board/ProcessView'
 import { ProjectView } from './board/ProjectView'
 import { CopyFlash } from './components/Copy'
-import { Toast } from './dock/parts'
+import { Toast, toast } from './dock/parts'
 import { cx } from './util'
 import { NewTaskDialog } from './views/NewTaskDialog'
 import { Settings } from './views/Settings'
@@ -21,6 +21,7 @@ export function App() {
 
   // 侧边栏 / 菜单栏让大窗口跳到某个任务
   useEffect(() => onMainEvent('navigate', (id) => setView({ type: 'task', id: id as string })), [])
+  useEffect(() => onMainEvent('remote-change', (msg) => toast(`🤖 ${msg}`)), [])
 
   // 打开哪个任务，哪个就是「当前任务」（剪贴板快捷键会存到这里）
   useEffect(() => {
@@ -118,7 +119,7 @@ function ProcessPage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
         <h1>进程</h1>
         <p className="muted">谁在做什么，一眼看清。把卡片拖到某个头像下面，就是交给 TA。</p>
       </header>
-      {board && <ProcessView wide board={board} onOpenTask={onOpenTask} />}
+      {board && <ProcessView board={board} onOpenTask={onOpenTask} />}
     </div>
   )
 }

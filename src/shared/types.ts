@@ -1,7 +1,7 @@
 // 主进程和界面共用的数据类型
 // 结构：项目 Project → 任务 Task → 子任务 Subtask → 子子任务（Subtask.children）
 
-export type TaskStatus = 'active' | 'paused' | 'done'
+export type TaskStatus = 'todo' | 'active' | 'paused' | 'done'
 
 export type SubtaskStatus = 'todo' | 'doing' | 'ai_running' | 'done'
 
@@ -13,10 +13,13 @@ export const STATUS_LABEL: Record<SubtaskStatus, string> = {
 }
 
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
+  todo: '待办',
   active: '进行中',
   paused: '已暂停',
   done: '已完成'
 }
+
+export const TASK_STATUS_ORDER: TaskStatus[] = ['todo', 'active', 'paused', 'done']
 
 /** 谁在做：AI 代理或者我自己。空字符串 = 还没分配 */
 export type AgentId = 'claude' | 'codex' | 'muse' | 'me'
@@ -60,6 +63,8 @@ export interface Subtask {
   prompt: string
   /** 接力子任务：接着上一个子任务做，上一个完成后才轮到它 */
   chained: boolean
+  /** 安排在哪天做（本地日期 YYYY-MM-DD）；空字符串 = 还没安排。子子任务不用 */
+  scheduledOn: string
   createdAt: number
   updatedAt: number
   /** 子子任务（只有子任务才有） */
@@ -107,6 +112,18 @@ export interface ProcessItem {
   promptExpanded: string
 }
 
+/** 月历里的一个子任务 */
+export interface CalendarItem extends ProcessItem {
+  scheduledOn: string
+}
+
+export interface CalendarBoard {
+  /** 安排在这段日子里的子任务（包括已完成的） */
+  items: CalendarItem[]
+  /** 还没安排日子、也没完成的子任务（只算待办和进行中的任务） */
+  unscheduled: CalendarItem[]
+}
+
 export interface ProcessBoard {
   lanes: Record<AgentId, ProcessItem[]>
   unassigned: ProcessItem[]
@@ -136,10 +153,12 @@ export interface PublicSettings {
   dataDir: string
   shortcuts: { dock: string }
   dock: DockSettings
+  /** 让 Claude Code 等 AI 工具操控 Baton 的本机 MCP 服务 */
+  mcp: { url: string; token: string; running: boolean; error: string | null }
 }
 
 type TaskPatch = Partial<Pick<Task, 'title' | 'goal' | 'doneCriteria' | 'prompt' | 'status'>>
-type SubtaskPatch = Partial<Pick<Subtask, 'title' | 'status' | 'agent' | 'prompt' | 'chained'>>
+type SubtaskPatch = Partial<Pick<Subtask, 'title' | 'status' | 'agent' | 'prompt' | 'chained' | 'scheduledOn'>>
 
 /** 界面通过 window.baton.call(name, ...args) 调用的全部方法 */
 export interface BatonApi {
@@ -162,12 +181,14 @@ export interface BatonApi {
     input: { title: string; prompt?: string; chained?: boolean; agent?: Assignee; parentId?: string }
   ): Promise<string>
   updateSubtask(id: string, patch: SubtaskPatch): Promise<void>
-  /** 同一层的兄弟按 ids 的顺序排（子任务之间，或同一个子任务下的子子任务之间） */
-  reorderSubtasks(taskId: string, ids: string[]): Promise<void>
+  /** 拖动后整体重排：从上到下的顺序，每项挂在哪个子任务下面（空字符串 = 本身是子任务） */
+  arrangeSubtasks(taskId: string, layout: { id: string; parentId: string }[]): Promise<void>
   /** 删子任务会连同它的子子任务一起删 */
   deleteSubtask(id: string): Promise<void>
 
   processBoard(): Promise<ProcessBoard>
+  /** 月历：from、to 是本地日期 YYYY-MM-DD（含两头） */
+  calendar(from: string, to: string): Promise<CalendarBoard>
   /** 进程视图里把子任务拖给某个执行者 */
   assignSubtask(id: string, agent: Assignee): Promise<void>
 
@@ -189,7 +210,21 @@ export interface BatonApi {
   setDockHoverOpen(on: boolean): Promise<void>
   /** 上下拖动把手 */
   moveHandle(phase: 'start' | 'move' | 'end', dy?: number): Promise<void>
+
+  /** 晾衣绳（挂在屏幕顶部的进程视图）：放下 / 收起 */
+  lineToggle(): Promise<void>
+  lineOpen(): Promise<void>
+  lineClose(): Promise<void>
+  /** 晾衣绳的收起动画播完了，可以隐藏窗口 */
+  lineClosed(): Promise<void>
+  /** 鼠标在卡片上时接住点击，在空白处时让点击穿到下面的软件 */
+  lineInteractive(on: boolean): Promise<void>
   openMainWindow(taskId?: string): Promise<void>
+
+  /** Claude Code 的命令行找不找得到、Baton 是否已经加进去 */
+  claudeCodeStatus(): Promise<{ cli: boolean; connected: boolean }>
+  /** 把 Baton 的 MCP 服务加到 Claude Code（用户级，所有项目可用） */
+  connectClaudeCode(): Promise<{ ok: boolean; message: string }>
 }
 
-export type MainEvent = 'data-changed' | 'navigate' | 'dock-state' | 'dock-show-task'
+export type MainEvent = 'data-changed' | 'navigate' | 'dock-state' | 'dock-show-task' | 'remote-change' | 'line-state'

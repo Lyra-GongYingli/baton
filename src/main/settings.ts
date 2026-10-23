@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { DockSettings, DockSide, PublicSettings } from '../shared/types'
@@ -12,12 +13,15 @@ interface StoredSettings {
   dock: DockSettings
   /** 把手在屏幕上的纵向位置，0 = 顶部，1 = 底部 */
   handleRatio: number
+  /** AI 工具连 MCP 服务用的密钥 */
+  mcpToken: string | null
 }
 
 const DEFAULTS: StoredSettings = {
   currentTaskId: null,
   dock: { side: 'right', pinned: false, hoverOpen: true },
-  handleRatio: 0.32
+  handleRatio: 0.32,
+  mcpToken: null
 }
 
 /** settings.json 是不是第一次创建（用来在首次启动时展开侧边栏打个招呼） */
@@ -42,7 +46,8 @@ function load(): StoredSettings {
         // 第一版叫 currentThreadId，任务 id 没变，直接沿用
         currentTaskId: stored.currentTaskId ?? stored.currentThreadId ?? null,
         dock: { ...DEFAULTS.dock, ...stored.dock },
-        handleRatio: stored.handleRatio ?? DEFAULTS.handleRatio
+        handleRatio: stored.handleRatio ?? DEFAULTS.handleRatio,
+        mcpToken: stored.mcpToken ?? null
       }
     } catch {
       // 文件坏了就用默认值
@@ -56,7 +61,16 @@ function save(patch: Partial<StoredSettings>): void {
   writeFileSync(file(), JSON.stringify(cache, null, 2))
 }
 
-export function getPublicSettings(): PublicSettings {
+/** MCP 密钥：第一次用时生成，之后一直沿用 */
+export function getMcpToken(): string {
+  const existing = load().mcpToken
+  if (existing) return existing
+  const token = randomBytes(24).toString('hex')
+  save({ mcpToken: token })
+  return token
+}
+
+export function getPublicSettings(): Omit<PublicSettings, 'mcp'> {
   const s = load()
   return {
     currentTaskId: s.currentTaskId,

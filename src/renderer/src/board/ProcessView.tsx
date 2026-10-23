@@ -1,4 +1,4 @@
-import { DndContext, DragOverlay, MeasuringStrategy, pointerWithin, useDraggable, useDroppable } from '@dnd-kit/core'
+import { DndContext, DragOverlay, pointerWithin, useDraggable, useDroppable } from '@dnd-kit/core'
 import { useEffect, useState, type CSSProperties } from 'react'
 import { AGENTS, AGENT_BY_ID } from '../../../shared/agents'
 import { STATUS_LABEL, type Assignee, type ProcessBoard, type ProcessItem } from '../../../shared/types'
@@ -12,22 +12,8 @@ import { cx } from '../util'
 // 进程视图：每个执行者一条泳道，看谁在跑什么。把卡片拖到某个头像上 = 交给 TA
 
 const LANE = 'lane:'
-/** 侧边栏顶部头像栏里的投放目标 */
-const BAR = 'bar:'
 
-function laneFromDropId(id: string): Assignee {
-  return (id.startsWith(BAR) ? id.slice(BAR.length) : id.slice(LANE.length)) as Assignee
-}
-
-export function ProcessView({
-  board,
-  wide,
-  onOpenTask
-}: {
-  board: ProcessBoard
-  wide?: boolean
-  onOpenTask: (taskId: string) => void
-}) {
+export function ProcessView({ board, onOpenTask }: { board: ProcessBoard; onOpenTask: (taskId: string) => void }) {
   const sensors = useDndSensors()
   const [active, setActive] = useState<ProcessItem | null>(null)
   // 松手后先在本地挪过去，等数据刷新回来再以数据为准
@@ -49,9 +35,6 @@ export function ProcessView({
     <DndContext
       sensors={sensors}
       collisionDetection={pointerWithin}
-      // 侧边栏里头像栏是吸顶的：拖动时不自动滚动，并且实时重新测量投放区，否则会对不准
-      autoScroll={Boolean(wide)}
-      measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
       onDragStart={({ active: a }) => {
         markDragging(true)
         setActive(all.find((i) => i.subtaskId === a.id) ?? null)
@@ -64,7 +47,7 @@ export function ProcessView({
         markDragging(false)
         setActive(null)
         if (!over) return
-        const lane = laneFromDropId(String(over.id))
+        const lane = String(over.id).slice(LANE.length) as Assignee
         const item = all.find((i) => i.subtaskId === a.id)
         if (!item || laneOf(item) === lane) return
         setMoved({ ...moved, [item.subtaskId]: lane })
@@ -84,55 +67,17 @@ export function ProcessView({
         </span>
       </div>
 
-      {wide ? (
-        <div className="lanes-board wide">
-          <Lane agent="" items={itemsIn('')} onOpenTask={onOpenTask} />
-          {AGENTS.map((a) => (
-            <Lane key={a.id} agent={a.id} items={itemsIn(a.id)} onOpenTask={onOpenTask} />
-          ))}
-        </div>
-      ) : (
-        <>
-          {/* 侧边栏太窄：顶部一排头像，卡片直接拖到头像上；下面只列有活的泳道 */}
-          <div className="agent-bar">
-            {AGENTS.map((a) => (
-              <AgentTarget key={a.id} agent={a.id} items={itemsIn(a.id)} dragging={Boolean(active)} />
-            ))}
-          </div>
-          <div className="lanes-board">
-            {AGENTS.filter((a) => itemsIn(a.id).length > 0).map((a) => (
-              <Lane key={a.id} agent={a.id} items={itemsIn(a.id)} onOpenTask={onOpenTask} />
-            ))}
-            <Lane agent="" items={itemsIn('')} onOpenTask={onOpenTask} />
-          </div>
-        </>
-      )}
+      <div className="lanes-board wide">
+        <Lane agent="" items={itemsIn('')} onOpenTask={onOpenTask} />
+        {AGENTS.map((a) => (
+          <Lane key={a.id} agent={a.id} items={itemsIn(a.id)} onOpenTask={onOpenTask} />
+        ))}
+      </div>
 
       <DragOverlay dropAnimation={{ duration: 200, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.2)' }}>
         {active ? <ProcessCard item={active} lane={laneOf(active)} overlay /> : null}
       </DragOverlay>
     </DndContext>
-  )
-}
-
-function AgentTarget({ agent, items, dragging }: { agent: Exclude<Assignee, ''>; items: ProcessItem[]; dragging: boolean }) {
-  const { setNodeRef, isOver } = useDroppable({ id: BAR + agent })
-  const info = AGENT_BY_ID[agent]
-  const busy = items.some((i) => i.status === 'ai_running' || i.status === 'doing')
-  return (
-    <button
-      ref={setNodeRef}
-      className={cx('agent-target', isOver && 'over', dragging && 'armed', !busy && 'idle')}
-      style={{ '--agent': info.color } as CSSProperties}
-      title={`${info.name}：${items.length} 件`}
-      onClick={() => document.getElementById(`lane-${agent}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-    >
-      <span className="agent-target-face">
-        <AgentIcon agent={agent} size={40} busy={busy} />
-        {items.length > 0 && <span className="agent-target-count">{items.length}</span>}
-      </span>
-      <span className="agent-target-name">{isOver ? '交给 TA' : info.name}</span>
-    </button>
   )
 }
 
@@ -159,7 +104,7 @@ function Lane({ agent, items, onOpenTask }: { agent: Assignee; items: ProcessIte
       style={{ '--agent': info?.color ?? 'var(--muted)' } as CSSProperties}
     >
       <header className="lane-head">
-        <AgentIcon agent={agent} size={34} busy={busy} />
+        <AgentIcon agent={agent} size={28} busy={busy} />
         <div className="lane-who">
           <span className="lane-name">{info ? info.name : '未分配'}</span>
           <span className="lane-sum">{summary}</span>
@@ -192,6 +137,7 @@ function ProcessCard({ item, lane, overlay }: { item: ProcessItem; lane: Assigne
       <div className="pcard-title">
         <span className="ref">S{item.ref}</span>
         <Copyable>{item.title}</Copyable>
+        {item.promptExpanded && !overlay && <PromptPill text={item.promptExpanded} />}
       </div>
       <div className="pcard-crumb">
         <span className="pcard-dot" />
@@ -203,7 +149,6 @@ function ProcessCard({ item, lane, overlay }: { item: ProcessItem; lane: Assigne
         </span>
         {item.waitingFor && <span className="waiting">🔒 等 S{item.waitingFor}</span>}
       </div>
-      {item.promptExpanded && !overlay && <PromptPill compact label="复制提示词" text={item.promptExpanded} />}
     </div>
   )
 }
