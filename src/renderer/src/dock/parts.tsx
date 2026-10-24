@@ -21,6 +21,7 @@ export const Icon = {
   grip: () => svg(<><circle cx="9" cy="6" r="1" /><circle cx="15" cy="6" r="1" /><circle cx="9" cy="12" r="1" /><circle cx="15" cy="12" r="1" /><circle cx="9" cy="18" r="1" /><circle cx="15" cy="18" r="1" /></>, 14),
   sparkle: () => svg(<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z" />, 14),
   send: () => svg(<path d="M12 19V5M6 11l6-6 6 6" />, 16),
+  trash: () => svg(<path d="M5 7h14M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />, 14),
   /** 晾衣绳：一根绳上夹着三张小卡片 */
   line: () => (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden>

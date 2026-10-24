@@ -222,6 +222,8 @@ function ProjectSection({
   const drop = useDroppable({ id: DROP + project.id })
   const [adding, setAdding] = useState<string | null>(null)
   const [showDone, setShowDone] = useState(false)
+  // 点了垃圾桶：标题这一行变成「确认删除？」，不用系统弹窗（侧边栏是不激活的面板，系统弹窗可能被挡住）
+  const [confirming, setConfirming] = useState(false)
   const done = tree.tasks.filter((t) => t.status === 'done')
 
   // 点色块换颜色
@@ -257,6 +259,14 @@ function ProjectSection({
           <Icon.plus />
         </button>
         <button
+          className="icon-btn small project-del"
+          title="删除这个项目"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setConfirming(true)}
+        >
+          <Icon.trash />
+        </button>
+        <button
           className={cx('icon-btn small chevron-btn', collapsed && 'collapsed')}
           title={collapsed ? '展开' : '收起'}
           onPointerDown={(e) => e.stopPropagation()}
@@ -265,6 +275,21 @@ function ProjectSection({
           ▾
         </button>
       </header>
+
+      {confirming && (
+        <div className="project-confirm" onPointerDown={(e) => e.stopPropagation()}>
+          <span>
+            删除「{project.title}」
+            {tree.tasks.length > 0 ? `和里面的 ${tree.tasks.length} 个任务（连同子任务、提示词）？删了找不回来。` : '？'}
+          </span>
+          <button className="project-confirm-no" autoFocus onClick={() => setConfirming(false)}>
+            取消
+          </button>
+          <button className="project-confirm-yes" onClick={() => api.deleteProject(project.id)}>
+            删除
+          </button>
+        </div>
+      )}
 
       {adding !== null && (
         <input

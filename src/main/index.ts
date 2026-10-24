@@ -146,7 +146,13 @@ const handlers: Handlers = {
   listProjects: db.listProjects,
   createProject: db.createProject,
   updateProject: db.updateProject,
-  deleteProject: db.deleteProject,
+  deleteProject: (id) => {
+    // 当前任务在这个项目里的话，一起清掉
+    const current = settings.getCurrentTaskId()
+    const inProject = current ? db.getTask(current)?.project.id === id : false
+    db.deleteProject(id)
+    if (inProject) settings.setCurrentTask(null)
+  },
   reorderProjects: db.reorderProjects,
 
   getTask: db.getTask,
@@ -256,6 +262,8 @@ if (!app.requestSingleInstanceLock()) {
     const firstRun = settings.isFirstRun()
     app.dock?.hide()
     db.openDb(join(app.getPath('userData'), 'baton.db'))
+    // 第一次用：先准备一个默认的项目（文件夹），侧边栏一打开就有地方加任务；以后删掉了不会再自动建
+    if (firstRun && db.listProjects().length === 0) db.createProject({ title: '我的项目' })
     dock.createDock({ load: loadRenderer, webPreferences })
     line.createLine({ load: loadRenderer, webPreferences })
     // 让 Claude Code 等 AI 工具能直接操控 Baton；AI 改了东西就刷新界面并提示一下

@@ -9,6 +9,7 @@ import { STATUS_LABEL, type Subtask, type TaskDetail } from '../../../shared/typ
 import { api } from '../api'
 import { AgentPicker } from '../components/AgentPicker'
 import { DateChip } from '../components/DatePicker'
+import { DeleteButton } from '../components/DeleteButton'
 import { InlineEdit, renderPrompt } from '../components/InlineEdit'
 import { PromptBox } from '../components/PromptBox'
 import { markDragging, useDndSensors, type DragHandle } from '../components/Sortable'
@@ -357,17 +358,10 @@ function Stop({
           <button className="row-add" title="加子子任务" onPointerDown={(e) => e.stopPropagation()} onClick={onAddChild}>
             ＋
           </button>
-          <button
-            className="row-del"
-            title="删除这个子任务"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => {
-              const extra = s.children.length ? `和它的 ${s.children.length} 个子子任务` : ''
-              if (confirm(`删除 S${s.ref}「${s.title}」${extra}？`)) api.deleteSubtask(s.id)
-            }}
-          >
-            ×
-          </button>
+          <DeleteButton
+            title={s.children.length ? `删除这个子任务和它的 ${s.children.length} 个子子任务` : '删除这个子任务'}
+            onConfirm={() => api.deleteSubtask(s.id)}
+          />
         </div>
       </div>
     </div>
@@ -430,16 +424,7 @@ function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detai
         )}
       </div>
       <StatusPicker small value={c.status} onChange={(status) => api.updateSubtask(c.id, { status })} />
-      <button
-        className="row-del"
-        title="删除这个子子任务"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={() => {
-          if (confirm(`删除「${c.title}」？`)) api.deleteSubtask(c.id)
-        }}
-      >
-        ×
-      </button>
+      <DeleteButton title="删除这个子子任务" onConfirm={() => api.deleteSubtask(c.id)} />
     </div>
   )
 }
