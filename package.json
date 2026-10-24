@@ -2,9 +2,22 @@
   "name": "baton",
   "productName": "Baton",
   "version": "0.1.0",
-  "description": "AI 时代的多线程任务接力工具（自用 MVP）",
+  "description": "AI 时代的多线程任务接力工具：项目 → 任务 → 子任务，写提示词、看进程、排日程（macOS）",
   "main": "./out/main/index.js",
   "private": true,
+  "license": "MIT",
+  "author": "Lyra-GongYingli",
+  "homepage": "https://github.com/Lyra-GongYingli/baton#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lyra-GongYingli/baton.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Lyra-GongYingli/baton/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",

@@ -52,7 +52,7 @@ export function NewTaskDialog({
         {projectId === NEW_PROJECT && (
           <label className="field">
             <span>新项目叫什么</span>
-            <input value={projectTitle} placeholder="比如：Moras" onChange={(e) => setProjectTitle(e.target.value)} />
+            <input value={projectTitle} placeholder="比如：个人网站" onChange={(e) => setProjectTitle(e.target.value)} />
           </label>
         )}
         <label className="field">
