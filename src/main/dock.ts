@@ -27,6 +27,9 @@ let hideTimer: NodeJS.Timeout | null = null
 let dragStartY = 0
 
 export const floating: BrowserWindowConstructorOptions = {
+  // macOS 的「不激活」面板：点开、拿到键盘焦点都不会把 Baton 这个 app 激活，
+  // 所以不会把你从当前桌面（Space）拽回大窗口所在的桌面一；也能浮在全屏 app 上面
+  type: 'panel',
   frame: false,
   transparent: true,
   hasShadow: false,

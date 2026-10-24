@@ -71,8 +71,12 @@ function showMainWindow(taskId?: string): void {
   const win = mainWindow!
   app.dock?.show()
   const reveal = (): void => {
+    // 在你现在所在的桌面打开：先让它出现在所有桌面上，显示出来以后再取消，它就留在当前这个桌面，
+    // 不会把你拽回它上次待的桌面
+    win.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
     win.show()
     win.focus()
+    win.setVisibleOnAllWorkspaces(false, { skipTransformProcessType: true })
     if (taskId) win.webContents.send('navigate', taskId)
   }
   if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal)
