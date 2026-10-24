@@ -1,7 +1,7 @@
 {
   "name": "baton",
   "productName": "Baton",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI 时代的多线程任务接力工具：项目 → 任务 → 子任务，写提示词、看进程、排日程（macOS）",
   "main": "./out/main/index.js",
   "private": true,

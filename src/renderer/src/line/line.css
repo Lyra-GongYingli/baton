@@ -309,21 +309,41 @@ body.route-line {
   outline-color: var(--tc) !important;
   outline-style: solid !important;
 }
-.line-note-section header {
+/* 一栏的标题：点一下折起 / 展开 */
+.line-note-head {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   margin-bottom: 2px;
+  padding: 1px 2px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 800;
+  color: inherit;
 }
-.line-note-section header .status-glyph {
+.line-note-head:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+.line-note-chevron {
+  width: 10px;
+  font-size: 10px;
+  opacity: 0.6;
+  transition: transform 0.18s;
+}
+.line-note-section.folded .line-note-chevron {
+  transform: rotate(-90deg);
+}
+.line-note-section.folded .line-note-head {
+  margin-bottom: 0;
+}
+.line-note-head .status-glyph {
   --tc: var(--note-ink);
 }
-.line-note-section.t-done header .status-glyph {
+.line-note-section.t-done .line-note-head .status-glyph {
   --tc: var(--c-done);
 }
-.line-note-section header b {
+.line-note-head b {
   margin-left: auto;
   font-family: var(--font-display);
   font-size: 14px;
@@ -369,7 +389,6 @@ body.route-line {
   text-decoration: line-through;
   text-decoration-color: color-mix(in srgb, var(--note-ink) 45%, transparent);
 }
-.line-note-more,
 .line-note-hint {
   margin: 1px 0 0 13px;
   font-size: 10.5px;
@@ -378,6 +397,21 @@ body.route-line {
 .line-note-hint {
   font-weight: 700;
   opacity: 1;
+}
+/* 便签的正文：任务多了在里面滚动，最高到晾衣绳窗口放得下为止 */
+.line-note-body {
+  max-height: 400px;
+  margin: 0 -6px;
+  padding: 0 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.line-note-body::-webkit-scrollbar {
+  width: 4px;
+}
+.line-note-body::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--note-ink) 30%, transparent);
 }
 
 /* ---------- 「✓ 已复制」：挂在卡片下面 ---------- */

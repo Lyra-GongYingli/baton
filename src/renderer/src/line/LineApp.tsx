@@ -27,8 +27,16 @@ import { cx } from '../util'
 const CARD_W = 300
 const NOTE_W = 196
 const GAP = 30
-/** 便签每一栏最多列几个任务 */
-const NOTE_ROWS = 3
+/** 便签上哪几栏折起来了，记在本机，下次打开还是这样 */
+const FOLDED_KEY = 'baton.noteFolded'
+
+function loadFolded(): Status[] {
+  try {
+    return JSON.parse(localStorage.getItem(FOLDED_KEY) ?? '[]') as Status[]
+  } catch {
+    return []
+  }
+}
 /** 绳子两头挂在屏幕顶边往下这么多 */
 const ROPE_Y = 8
 const SECTION = 'section:'
@@ -305,6 +313,12 @@ function Note({
   onStatus: (taskId: string, status: Status) => void
 }) {
   const today = new Date()
+  const [folded, setFolded] = useState<Status[]>(loadFolded)
+  const toggle = (status: Status): void => {
+    const next = folded.includes(status) ? folded.filter((s) => s !== status) : [...folded, status]
+    setFolded(next)
+    localStorage.setItem(FOLDED_KEY, JSON.stringify(next))
+  }
   return (
     <div className={cx('line-note', 'line-hit', dragging && 'armed')}>
       <div className="line-note-date">
@@ -315,40 +329,56 @@ function Note({
           </button>
         )}
       </div>
-      {NOTE_SECTIONS.map(({ status, name }) => (
-        <NoteSection key={status} status={status} name={name} items={noteOf(status)} onOpen={onOpen} onStatus={onStatus} />
-      ))}
+      {/* 任务多了便签不会无限变长：这里面自己滚动，日期留在上面 */}
+      <div className="line-note-body">
+        {NOTE_SECTIONS.map(({ status, name }) => (
+          <NoteSection
+            key={status}
+            status={status}
+            name={name}
+            items={noteOf(status)}
+            folded={folded.includes(status)}
+            onToggle={() => toggle(status)}
+            onOpen={onOpen}
+            onStatus={onStatus}
+          />
+        ))}
+      </div>
     </div>
   )
 }
 
+/** 便签的一栏：点标题折起 / 展开，展开时全部列出来。折起来也照样能把任务卡拖进来 */
 function NoteSection({
   status,
   name,
   items,
+  folded,
+  onToggle,
   onOpen,
   onStatus
 }: {
   status: Status
   name: string
   items: NoteEntry[]
+  folded: boolean
+  onToggle: () => void
   onOpen: (taskId: string) => void
   onStatus: (taskId: string, status: Status) => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: SECTION + status })
-  const extra = items.length - NOTE_ROWS
   return (
-    <section ref={setNodeRef} className={cx('line-note-section', `t-${status}`, isOver && 'over')}>
-      <header>
+    <section ref={setNodeRef} className={cx('line-note-section', `t-${status}`, isOver && 'over', folded && 'folded')}>
+      <button className="line-note-head" title={folded ? '展开这一栏' : '折起这一栏'} onClick={onToggle}>
+        <span className="line-note-chevron" aria-hidden>
+          ▾
+        </span>
         <StatusGlyph status={status} />
         {name}
         <b>{items.length}</b>
-      </header>
+      </button>
       {isOver && <p className="line-note-hint">松手改成{STATUS_LABEL[status]}</p>}
-      {items.slice(0, NOTE_ROWS).map((e) => (
-        <NoteItem key={e.id} entry={e} onOpen={onOpen} onStatus={onStatus} />
-      ))}
-      {extra > 0 && <p className="line-note-more">还有 {extra} 个</p>}
+      {!folded && items.map((e) => <NoteItem key={e.id} entry={e} onOpen={onOpen} onStatus={onStatus} />)}
     </section>
   )
 }
