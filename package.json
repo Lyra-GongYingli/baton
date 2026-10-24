@@ -52,13 +52,14 @@
     },
     "files": [
       "out/**",
-      "resources/**",
+      "resources/trayTemplate*.png",
       "package.json"
     ],
     "electronDist": "node_modules/electron/dist",
     "mac": {
       "target": "dir",
       "category": "public.app-category.productivity",
+      "icon": "resources/icon.icns",
       "identity": null
     }
   }

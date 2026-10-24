@@ -22,7 +22,27 @@ AI 时代的多线程任务接力工具。
 
 ## 安装
 
-需要 **macOS 12 或更新**，以及 **Node.js 22 或更新**（只在打包时用到）。
+### 直接下载（推荐）
+
+到 [Releases](https://github.com/Lyra-GongYingli/baton/releases/latest) 下载对应的压缩包：
+
+| 你的 Mac | 下载 |
+|---|---|
+| Apple 芯片（M1 / M2 / M3 / M4…） | `Baton-版本号-mac-arm64.zip` |
+| Intel 芯片 | `Baton-版本号-mac-x64.zip` |
+
+不确定是哪种？点屏幕左上角  → 关于本机，看「芯片」一栏写的是 Apple 还是 Intel。需要 macOS 12 或更新。
+
+1. 双击压缩包解压，把 `Baton.app` 拖进「应用程序」文件夹。
+2. 第一次打开：这个 App 没有做苹果公证，系统会提示「无法验证开发者」，按下面放行一次，以后就能正常打开：
+   - **macOS 15 及以后**：双击打开 → 提示框点「完成」→ 打开「系统设置 → 隐私与安全性」，往下拉，在 Baton 那一行点「仍要打开」。
+   - **macOS 14 及以前**：在「应用程序」里**右键** Baton → 打开 → 在提示框里点「打开」。
+   - 或者在终端运行一次：`xattr -dr com.apple.quarantine /Applications/Baton.app`
+3. 打开后屏幕右边会出现一个细把手，点一下就开始用。
+
+### 从源码打包
+
+需要 **Node.js 22 或更新**。
 
 ```bash
 git clone https://github.com/Lyra-GongYingli/baton.git
@@ -31,18 +51,12 @@ npm install
 npm run build:mac
 ```
 
-打包好的 App 在 `dist/mac-arm64/Baton.app`（Apple Silicon）或 `dist/mac/Baton.app`（Intel），拖进「应用程序」文件夹，双击打开。
+打包好的 App 在 `dist/mac-arm64/Baton.app`（Apple 芯片）或 `dist/mac/Baton.app`（Intel），拖进「应用程序」文件夹，双击打开。
 
 如果 `npm install` 时下载 Electron 失败（网络需要代理），设置代理后再装：
 
 ```bash
 ELECTRON_GET_USE_PROXY=1 GLOBAL_AGENT_HTTPS_PROXY=http://你的代理地址:端口 npm install
-```
-
-这个 App 没有做苹果签名。如果是别人打包好发给你的 `Baton.app`，第一次打开被系统拦住时，在 Finder 里右键 → 打开；或者在终端运行一次：
-
-```bash
-xattr -dr com.apple.quarantine /Applications/Baton.app
 ```
 
 ## 快速上手
@@ -165,8 +179,8 @@ src/
     views/      大窗口的总看板、任务页、设置
     components/ 状态标签、日期选择、右键菜单等小部件
   shared/     两边共用的类型、执行者、日期、提示词展开逻辑
-resources/    菜单栏图标
-scripts/      生成图标的脚本
+resources/    App 图标、菜单栏图标
+scripts/      生成图标的脚本（App 图标：npx electron scripts/make-app-icon.mjs）
 ```
 
 ## 路线图
@@ -174,7 +188,7 @@ scripts/      生成图标的脚本
 - 自定义执行者（加 ChatGPT、Gemini 等）
 - 依赖关系图视图
 - 侧边栏跟随鼠标所在的显示器（现在固定在主显示器）
-- 打包好的安装包（签名、自动更新）
+- 苹果签名和公证、自动更新
 
 欢迎提 Issue 和 Pull Request。
 
