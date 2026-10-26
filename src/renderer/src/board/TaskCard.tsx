@@ -12,7 +12,16 @@ import { dayLabel } from '../../../shared/dates'
 import { DateChip } from '../components/DatePicker'
 import { cx, titleFromText } from '../util'
 
-/** 夹在洞洞板上的任务卡。单击打开，双击标题复制，按住拖动排序，把文字拖上来变成一个新子任务 */
+/** 整张任务卡带的提示词：任务自己的，没有就用当前子任务（第一个没做完的）的 */
+export function cardPrompt(t: TaskSummary): string {
+  if (t.prompt) return expandPrompt(t.prompt, t)
+  return t.current ? t.currentPrompt : ''
+}
+
+/**
+ * 夹在洞洞板上的任务卡。单击打开，双击标题复制，按住拖动排序，把文字拖上来变成一个新子任务；
+ * 有提示词的卡按住拖到 ChatGPT / Claude 等别的软件的输入框，松手就把提示词粘进去
+ */
 export function TaskCard({
   task: t,
   index,
@@ -31,11 +40,7 @@ export function TaskCard({
   })
   const click = useDelayedClick(onOpen)
   // 复制图标：优先任务提示词，没有就复制当前子任务的
-  const copy = t.prompt
-    ? { text: expandPrompt(t.prompt, t), label: '复制任务提示词' }
-    : t.currentPrompt && t.current
-      ? { text: t.currentPrompt, label: `复制 S${t.current.ref} 提示词` }
-      : null
+  const copyText = cardPrompt(t)
   const style = { '--c': t.color, '--tilt': tiltOf(t.id), '--i': index } as CSSProperties
 
   return (
@@ -54,13 +59,14 @@ export function TaskCard({
         }
         {...drag?.attributes}
         {...drag?.listeners}
+        draggable={drag?.draggable || undefined}
         {...drop.props}
       >
         <span className="tcard-clip" />
         <div className="tcard-head">
           <Copyable className="tcard-title">{t.title}</Copyable>
           <TaskStatusPicker taskId={t.id} value={t.status} />
-          {copy && <PromptPill text={copy.text} label={undefined} />}
+          {copyText && <PromptPill text={copyText} />}
         </div>
         <Track statuses={t.statuses} />
         <div className="tcard-now">

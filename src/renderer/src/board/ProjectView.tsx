@@ -15,7 +15,7 @@ import { InlineEdit } from '../components/InlineEdit'
 import { markDragging, useDndSensors, useSortableHandle } from '../components/Sortable'
 import { Icon } from '../dock/parts'
 import { cx } from '../util'
-import { TaskCard } from './TaskCard'
+import { cardPrompt, TaskCard } from './TaskCard'
 
 // 项目视图：项目 → 任务卡。项目可以拖动排序，任务可以在项目内、跨项目拖动
 
@@ -53,6 +53,8 @@ export function ProjectView({
   const [projectOrder, setProjectOrder] = useState(trees.map((t) => t.project.id))
   const [columns, setColumns] = useState<Columns>(columnsOf(trees))
   const [active, setActive] = useState<string | null>(null)
+  // 带着提示词的卡走浏览器的拖放，跟着鼠标的是浏览器画的影子，自己的那张就不画了
+  const [nativeDrag, setNativeDrag] = useState(false)
   const [collapsed, setCollapsed] = useState(loadCollapsed)
   const [newProject, setNewProject] = useState<string | null>(null)
 
@@ -109,9 +111,10 @@ export function ProjectView({
     <DndContext
       sensors={sensors}
       collisionDetection={collision}
-      onDragStart={({ active: a }) => {
+      onDragStart={({ active: a, activatorEvent }) => {
         markDragging(true)
         setActive(String(a.id))
+        setNativeDrag(activatorEvent?.type === 'dragstart')
       }}
       onDragCancel={() => {
         markDragging(false)
@@ -191,7 +194,7 @@ export function ProjectView({
 
       <DragOverlay dropAnimation={{ duration: 220, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.2)' }}>
         {active?.startsWith(T) && tasks.get(active.slice(T.length)) ? (
-          <div className="drag-ghost">
+          <div className={cx('drag-ghost', nativeDrag && 'native')}>
             <TaskCard task={tasks.get(active.slice(T.length))!} index={0} onOpen={() => {}} />
           </div>
         ) : null}
@@ -344,6 +347,6 @@ function ProjectSection({
 }
 
 function SortableTask({ task, index, onOpen }: { task: TaskSummary; index: number; onOpen: () => void }) {
-  const handle = useSortableHandle(T + task.id)
+  const handle = useSortableHandle(T + task.id, { text: cardPrompt(task) })
   return <TaskCard task={task} index={index} onOpen={onOpen} drag={handle} />
 }

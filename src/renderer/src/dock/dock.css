@@ -1233,6 +1233,10 @@ button:hover .mini-card.c {
   box-shadow: 0 28px 50px -16px rgba(0, 0, 0, 0.45);
   cursor: grabbing;
 }
+/* 带着提示词的卡走浏览器的拖放，跟着鼠标的是浏览器画的影子 */
+.drag-ghost.native {
+  opacity: 0;
+}
 
 .tcard-now .agent-icon {
   margin-right: -1px;

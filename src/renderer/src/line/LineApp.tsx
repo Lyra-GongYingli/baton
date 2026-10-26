@@ -9,11 +9,13 @@ import {
 } from '@dnd-kit/core'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { dayLabel } from '../../../shared/dates'
+import { expandPrompt } from '../../../shared/prompt'
 import { STATUS_LABEL, type LineState, type Status, type TaskDetail } from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
+import { cardPrompt } from '../board/TaskCard'
 import { TaskBody } from '../board/TaskBody'
 import { CopyFlash } from '../components/Copy'
-import { draggingOrJustDragged, isDragging, markDragging, useDndSensors } from '../components/Sortable'
+import { draggingOrJustDragged, isDragging, markDragging, useDndSensors, type DragOut } from '../components/Sortable'
 import { openStatusMenu, StatusMenuHost } from '../components/StatusMenu'
 import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
 import { Icon, Toast, Track } from '../dock/parts'
@@ -49,10 +51,10 @@ const NOTE_SECTIONS: { status: Status; name: string }[] = [
 
 type Phase = 'hidden' | 'in' | 'out'
 type Flash = { key: string; text: string; id: number }
-/** 被拖动的东西：一张任务卡，或便签上的一个任务 */
-type Dragged = { taskId: string; title: string; color: string }
+/** 被拖动的东西：一张任务卡，或便签上的一个任务。带着提示词的还能拖出去丢进别的软件的输入框 */
+type Dragged = { taskId: string; title: string; color: string; dragOut?: DragOut }
 /** 便签上的一行 */
-type NoteEntry = { id: string; title: string; color: string; projectTitle: string; status: Status; from?: string }
+type NoteEntry = { id: string; title: string; color: string; projectTitle: string; status: Status; from?: string; prompt: string }
 
 // 窗口的空白处要让点击穿过去，鼠标进到卡片上时才接住
 let interactive = false
@@ -75,6 +77,8 @@ export function LineApp() {
   // 拖过去先在本地挪好，等数据刷新回来再以数据为准
   const [moved, setMoved] = useState<Record<string, Status>>({})
   const [dragged, setDragged] = useState<Dragged | null>(null)
+  // 浏览器原生拖放（带提示词的任务）：跟着鼠标的小纸条由浏览器画，DragOverlay 就不画了
+  const [nativeDrag, setNativeDrag] = useState(false)
   const [flash, setFlash] = useState<Flash | null>(null)
   const [pinned, setPinned] = useState(false)
   const sensors = useDndSensors()
@@ -118,12 +122,21 @@ export function LineApp() {
       const inField = (e.target as HTMLElement | null)?.closest?.('input, textarea, select')
       if (e.key === 'Escape' && !inField && !draggingOrJustDragged()) api.lineClose()
     }
+    // 带着提示词往外拖（浏览器原生拖放）时收不到 mousemove：按拖到的位置决定，
+    // 在卡片 / 便签上就接住，空白处让拖动穿过去，好丢进下面那个软件的输入框
+    const drag = (e: DragEvent): void => {
+      if (!e.screenX && !e.screenY) return
+      const el = document.elementFromPoint(e.screenX - window.screenX, e.screenY - window.screenY)
+      setInteractive(Boolean(el?.closest('.line-hit')))
+    }
     const resize = (): void => setWidth(window.innerWidth)
+    window.addEventListener('drag', drag)
     window.addEventListener('mousemove', move)
     document.documentElement.addEventListener('mouseleave', leave)
     window.addEventListener('keydown', key)
     window.addEventListener('resize', resize)
     return () => {
+      window.removeEventListener('drag', drag)
       window.removeEventListener('mousemove', move)
       document.documentElement.removeEventListener('mouseleave', leave)
       window.removeEventListener('keydown', key)
@@ -147,6 +160,7 @@ export function LineApp() {
       color: d.project.color,
       projectTitle: d.project.title,
       status: 'active' as Status,
+      prompt: detailPrompt(d),
       detail: d
     })),
     ...[...board.todo, ...board.paused, ...board.done].map((t) => ({
@@ -155,7 +169,8 @@ export function LineApp() {
       color: t.color,
       projectTitle: t.projectTitle,
       status: t.status,
-      from: t.span?.from
+      from: t.span?.from,
+      prompt: cardPrompt(t)
     }))
   ].map((e) => ({ ...e, status: moved[e.id] ?? e.status }))
   const cards = entries.filter((e) => e.status === 'active' && e.detail).map((e) => e.detail as TaskDetail)
@@ -209,9 +224,10 @@ export function LineApp() {
         collisionDetection={preferSections}
         autoScroll={false}
         measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
-        onDragStart={({ active }) => {
+        onDragStart={({ active, activatorEvent }) => {
           markDragging(true)
           setDragged(active.data.current as Dragged)
+          setNativeDrag(activatorEvent?.type === 'dragstart')
         }}
         onDragCancel={() => {
           markDragging(false)
@@ -259,7 +275,7 @@ export function LineApp() {
           </div>
         ))}
         <DragOverlay dropAnimation={null}>
-          {dragged ? (
+          {dragged && !nativeDrag ? (
             <span className="line-slip" style={{ '--c': dragged.color } as CSSProperties}>
               {dragged.title}
             </span>
@@ -394,16 +410,22 @@ function NoteItem({
 }) {
   const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({
     id: `note:${entry.id}`,
-    data: { taskId: entry.id, title: entry.title, color: entry.color } satisfies Dragged
+    data: {
+      taskId: entry.id,
+      title: entry.title,
+      color: entry.color,
+      dragOut: { text: entry.prompt, slip: { title: entry.title, color: entry.color } }
+    } satisfies Dragged
   })
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      draggable={Boolean(entry.prompt) || undefined}
       className={cx('line-note-item', dragging && 'placeholder')}
       style={{ '--c': entry.color } as CSSProperties}
-      title={`${entry.projectTitle} · ${entry.title}\n点一下打开 · 拖到绳子上开始做 · 右击改状态`}
+      title={`${entry.projectTitle} · ${entry.title}\n点一下打开 · 拖到绳子上开始做 · 右击改状态${entry.prompt ? ' · 拖到 AI 的输入框粘贴提示词' : ''}`}
       onClick={() => {
         if (!isDragging()) onOpen(entry.id)
       }}
@@ -437,9 +459,15 @@ function TaskCard({
   onStatus: (taskId: string, status: Status) => void
 }) {
   const { task, project, subtasks } = detail
+  const prompt = detailPrompt(detail)
   const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({
     id: `task:${task.id}`,
-    data: { taskId: task.id, title: task.title, color: project.color } satisfies Dragged
+    data: {
+      taskId: task.id,
+      title: task.title,
+      color: project.color,
+      dragOut: { text: prompt, slip: { title: task.title, color: project.color } }
+    } satisfies Dragged
   })
 
   return (
@@ -457,7 +485,13 @@ function TaskCard({
         })
       }
     >
-      <header className="line-task-head" {...attributes} {...listeners} title="按住这一条，拖到便签上可以改状态">
+      <header
+        className="line-task-head"
+        {...attributes}
+        {...listeners}
+        draggable={Boolean(prompt) || undefined}
+        title={`按住这一条，拖到便签上可以改状态${prompt ? '；拖到 AI 的输入框，松手粘贴提示词' : ''}`}
+      >
         <span className="line-task-project">
           <i />
           {project.title}
@@ -478,6 +512,13 @@ function TaskCard({
       </div>
     </div>
   )
+}
+
+/** 拖出去时带的提示词：任务自己的，没有就用当前子任务（第一个没做完的）的 */
+function detailPrompt({ task, subtasks }: TaskDetail): string {
+  if (task.prompt) return expandPrompt(task.prompt, task)
+  const current = subtasks.find((s) => !s.parentId && s.status !== 'done')
+  return current?.prompt ? expandPrompt(current.prompt, task) : ''
 }
 
 /** 没有进行中的任务时挂一张空卡片 */

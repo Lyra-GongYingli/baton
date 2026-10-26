@@ -229,7 +229,8 @@ body.route-line {
 }
 
 /* 拖着走的小纸条 */
-.line-slip {
+.line-slip,
+.drag-slip {
   display: inline-block;
   max-width: 200px;
   padding: 6px 12px 6px 10px;
@@ -560,4 +561,13 @@ body.route-line {
   100% {
     background: transparent;
   }
+}
+
+/* 带着提示词往外拖时跟着鼠标的小纸条：先画在屏幕外面给浏览器拍下来 */
+.drag-slip {
+  position: fixed;
+  top: -200px;
+  left: 0;
+  box-shadow: none;
+  transform: none;
 }
