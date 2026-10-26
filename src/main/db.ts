@@ -113,8 +113,11 @@ export function openDb(file: string): void {
   putOrphansInProject()
   // 状态只表达进度：老的「我在做」「AI 在跑」「等我审核」都算进行中（谁在做记在 agent 上）
   db.exec("UPDATE subtasks SET status = 'active' WHERE status IN ('doing', 'ai_running', 'review')")
-  // 启动时把所有任务的状态和子任务进度对齐一次
-  for (const r of db.prepare('SELECT id FROM tasks').all() as Row[]) syncTaskStatus(r.id as string)
+  // 启动时把所有任务的状态和子任务进度对齐一次，S 编号也按顺序排一遍（以前拖动、删除后会乱）
+  for (const r of db.prepare('SELECT id FROM tasks').all() as Row[]) {
+    renumberSubtasks(r.id as string)
+    syncTaskStatus(r.id as string)
+  }
 }
 
 // ---------- 老数据迁移 ----------
@@ -479,7 +482,7 @@ export function createSubtask(
   if (!t) throw new Error('任务不存在')
   const parentId = input.parentId ?? ''
   if (input.scheduledOn && !DATE.test(input.scheduledOn)) throw new Error(`日期格式应为 YYYY-MM-DD：${input.scheduledOn}`)
-  // 子子任务不占子任务的 S 编号（显示成 S1.1、S1.2，按顺序算出来）
+  // S 编号跟着顺序走，新的排在最后；子子任务不占 S 编号（显示成 S1.1、S1.2，按顺序算出来）
   const ref = parentId ? 0 : Number(t.next_ref)
   const max = db
     .prepare('SELECT COALESCE(MAX(position), 0) AS p FROM subtasks WHERE task_id = ? AND parent_id = ?')
@@ -509,14 +512,28 @@ export function createSubtask(
     now,
     now
   )
-  if (parentId) {
-    touchTask(taskId)
-    syncSubtaskStatus(parentId)
-  } else {
-    db.prepare('UPDATE tasks SET next_ref = ?, updated_at = ? WHERE id = ?').run(ref + 1, now, taskId)
-  }
+  if (parentId) syncSubtaskStatus(parentId)
+  else renumberSubtasks(taskId)
+  touchTask(taskId)
   syncTaskStatus(taskId)
   return id
+}
+
+/**
+ * S 编号就是顺序：子任务从上到下是 S1、S2、S3……
+ * 拖动换了位置、删掉一个、子子任务提出来 / 子任务放进去之后都重新排；子子任务不占编号。
+ * AI（MCP）认子任务用 id，不用 S 编号，所以重排不会让它改错。
+ */
+function renumberSubtasks(taskId: string): void {
+  const rows = db
+    .prepare("SELECT id, ref FROM subtasks WHERE task_id = ? AND parent_id = '' ORDER BY position, created_at")
+    .all(taskId) as Row[]
+  const setRef = db.prepare('UPDATE subtasks SET ref = ? WHERE id = ?')
+  rows.forEach((r, i) => {
+    if (Number(r.ref) !== i + 1) setRef.run(i + 1, r.id)
+  })
+  db.prepare("UPDATE subtasks SET ref = 0 WHERE task_id = ? AND parent_id != '' AND ref != 0").run(taskId)
+  db.prepare('UPDATE tasks SET next_ref = ? WHERE id = ?').run(rows.length + 1, taskId)
 }
 
 
@@ -555,12 +572,10 @@ export function assignSubtask(id: string, agent: Assignee): void {
 
 /**
  * 拖动后整体重排：layout 是从上到下的顺序，每项说明它挂在哪个子任务下面（空字符串 = 本身是子任务）。
- * 子子任务被拖出来变成子任务时，补一个 S 编号；子任务被拖进别的子任务时，变成简单的清单项（不接力、不分配）。
+ * 排完 S 编号按新顺序重新来；子任务被拖进别的子任务时，变成简单的清单项（不接力、不分配）。
  */
 export function arrangeSubtasks(taskId: string, layout: { id: string; parentId: string }[]): void {
-  const t = db.prepare('SELECT next_ref FROM tasks WHERE id = ?').get(taskId) as Row | undefined
-  if (!t) return
-  let nextRef = Number(t.next_ref)
+  if (!db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)) return
   const touchedParents = new Set<string>()
   layout.forEach(({ id, parentId }, i) => {
     const row = db
@@ -571,7 +586,6 @@ export function arrangeSubtasks(taskId: string, layout: { id: string; parentId: 
     if (row.parent_id !== parentId) {
       for (const p of [row.parent_id as string, parentId]) if (p) touchedParents.add(p)
       if (!parentId) {
-        if (!Number(row.ref)) cols.ref = nextRef++
         cols.chained = 0
         if (!row.scheduled_on) cols.scheduled_on = todayStr()
       } else {
@@ -583,7 +597,8 @@ export function arrangeSubtasks(taskId: string, layout: { id: string; parentId: 
     }
     update('subtasks', id, cols)
   })
-  db.prepare('UPDATE tasks SET next_ref = ?, updated_at = ? WHERE id = ?').run(nextRef, Date.now(), taskId)
+  renumberSubtasks(taskId)
+  touchTask(taskId)
   for (const p of touchedParents) syncSubtaskStatus(p)
   syncTaskStatus(taskId)
 }
@@ -599,6 +614,7 @@ export function deleteSubtask(id: string): void {
   db.prepare('DELETE FROM subtasks WHERE id = ? OR parent_id = ?').run(id, id)
   if (!info) return
   if (info.parentId) syncSubtaskStatus(info.parentId)
+  else renumberSubtasks(info.taskId)
   touchTask(info.taskId)
   syncTaskStatus(info.taskId)
 }
