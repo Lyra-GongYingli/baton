@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import { expandPrompt } from '../../../shared/prompt'
-import { STATUS_LABEL, type TaskSummary } from '../../../shared/types'
+import { STATUS_LABEL, type SubtaskBrief, type TaskSummary } from '../../../shared/types'
 import { api } from '../api'
 import { AgentIcon } from '../components/AgentIcon'
 import { Copyable, useDelayedClick } from '../components/Copy'
@@ -8,7 +8,6 @@ import type { DragHandle } from '../components/Sortable'
 import { openStatusMenu } from '../components/StatusMenu'
 import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
 import { PromptPill, tiltOf, toast, Track, useDropTarget } from '../dock/parts'
-import { dayLabel } from '../../../shared/dates'
 import { DateChip } from '../components/DatePicker'
 import { cx, titleFromText } from '../util'
 
@@ -69,24 +68,17 @@ export function TaskCard({
           {copyText && <PromptPill text={copyText} />}
         </div>
         <Track statuses={t.statuses} />
-        <div className="tcard-now">
-          {t.current ? (
-            <>
-              <span className={cx('now-status', `t-${t.current.status}`)}>
-                <StatusGlyph status={t.current.status} />
-                {STATUS_LABEL[t.current.status]}
-              </span>
-              <b>S{t.current.ref}</b>
-              <Copyable>{t.current.title}</Copyable>
-              {t.current.agent && <AgentIcon agent={t.current.agent} size={15} busy={t.current.status === 'active'} />}
-            </>
-          ) : t.subtaskTotal > 0 ? (
-            '子任务都完成了 🏁'
-          ) : (
+        {t.subtasks.length > 0 ? (
+          <ol className="tcard-subs">
+            {t.subtasks.map((s) => (
+              <SubRow key={s.id} s={s} label={`S${s.ref}`} current={s.id === t.current?.id} />
+            ))}
+          </ol>
+        ) : (
+          <div className="tcard-now">
             <span className="muted">还没有子任务，点进来加第一个</span>
-          )}
-          <TaskSpan task={t} />
-        </div>
+          </div>
+        )}
         {drop.over && <div className="tcard-drop">松手，变成一个新子任务</div>}
       </div>
     </div>
@@ -94,21 +86,33 @@ export function TaskCard({
 }
 
 /**
- * 卡片右下角：当前那个子任务（同一行左边写着的 Sx）哪天做，点一下就能改。
- * 后面还有排得更晚的子任务时，跟一个淡淡的「→ 10/28」，告诉你整个任务排到哪天。
+ * 卡片上的一个子任务（子子任务缩进挂在它下面）：状态、编号、标题、谁在做。
+ * 排了日子的显示哪天做，当前那个没排也留着日期按钮，点一下就能改
  */
-export function TaskSpan({ task: t }: { task: TaskSummary }) {
-  const cur = t.current
-  if (!cur) return null
-  const later = t.span && t.span.to > (cur.scheduledOn || t.span.to) ? t.span.to : ''
+function SubRow({ s, label, current }: { s: SubtaskBrief; label: string; current?: boolean }) {
+  const done = s.status === 'done'
   return (
-    <span className="tcard-time" title={t.unscheduled ? `还有 ${t.unscheduled} 个子任务没排日子` : undefined}>
-      <DateChip
-        value={cur.scheduledOn}
-        title={`S${cur.ref} 哪天做：点一下改`}
-        onChange={(day) => api.updateSubtask(cur.id, { scheduledOn: day })}
-      />
-      {later && <span className="tcard-later">→ {dayLabel(later)}</span>}
-    </span>
+    <li className={cx('tcard-sub', `t-${s.status}`, current && 'current')}>
+      <div className="tcard-sub-row" title={STATUS_LABEL[s.status]}>
+        <StatusGlyph status={s.status} />
+        <b>{label}</b>
+        <Copyable className="tcard-sub-title">{s.title}</Copyable>
+        {s.agent && <AgentIcon agent={s.agent} size={15} busy={s.status === 'active'} />}
+        {!done && (s.scheduledOn || current) && (
+          <DateChip
+            value={s.scheduledOn}
+            title={`${label} 哪天做：点一下改`}
+            onChange={(day) => api.updateSubtask(s.id, { scheduledOn: day })}
+          />
+        )}
+      </div>
+      {s.children.length > 0 && (
+        <ol className="tcard-subs nested">
+          {s.children.map((c, i) => (
+            <SubRow key={c.id} s={c} label={`${label}.${i + 1}`} />
+          ))}
+        </ol>
+      )}
+    </li>
   )
 }

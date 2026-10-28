@@ -15,6 +15,7 @@ import type {
   ProjectTree,
   Status,
   Subtask,
+  SubtaskBrief,
   Task,
   TaskDetail,
   TaskSummary
@@ -338,11 +339,21 @@ export function listProjects(): ProjectTree[] {
     toProject
   )
   const tasks = (db.prepare('SELECT * FROM tasks ORDER BY position, created_at').all() as Row[]).map(toTask)
+  // 子任务和子子任务一起取出来，子子任务用 parent_id 挂回去
   const subRows = db
     .prepare(
-      "SELECT id, task_id, ref, title, status, agent, prompt, scheduled_on FROM subtasks WHERE parent_id = '' ORDER BY position"
+      'SELECT id, task_id, parent_id, ref, title, status, agent, prompt, scheduled_on FROM subtasks ORDER BY position, created_at'
     )
     .all() as Row[]
+  const brief = (s: Row): SubtaskBrief => ({
+    id: s.id as string,
+    ref: Number(s.ref),
+    title: s.title as string,
+    status: s.status as Status,
+    agent: s.agent as Assignee,
+    scheduledOn: (s.scheduled_on as string) ?? '',
+    children: []
+  })
 
   const now = todayStr()
   return projects.map((p) => ({
@@ -350,7 +361,7 @@ export function listProjects(): ProjectTree[] {
     tasks: tasks
       .filter((t) => t.projectId === p.id)
       .map((t): TaskSummary => {
-        const mine = subRows.filter((s) => s.task_id === t.id)
+        const mine = subRows.filter((s) => s.task_id === t.id && !s.parent_id)
         const current = mine.find((s) => s.status !== 'done')
         // 任务的时间 = 没做完的子任务排在哪几天
         const open = mine.filter((s) => s.status !== 'done')
@@ -372,6 +383,7 @@ export function listProjects(): ProjectTree[] {
               }
             : null,
           statuses: mine.map((s) => s.status as Status),
+          subtasks: mine.map((s) => ({ ...brief(s), children: subRows.filter((c) => c.parent_id === s.id).map(brief) })),
           currentPrompt: current?.prompt ? expandPrompt(String(current.prompt), t) : '',
           span: days.length ? { from: days[0], to: days[days.length - 1], overdue: days[0] < now } : null,
           unscheduled: open.length - days.length

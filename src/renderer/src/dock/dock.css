@@ -304,9 +304,56 @@ body.route-handle {
 .tcard-time.overdue svg {
   color: var(--danger);
 }
-.tcard-later {
-  font-size: 10.5px;
+/* 卡片上的子任务清单：按顺序全部列出来，子子任务缩进挂在下面；当前那个加粗，做完的划掉 */
+.tcard-subs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+.tcard-subs.nested {
+  margin: 1px 0 1px 13px;
+  font-size: 11.5px;
+}
+.tcard-sub-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+.tcard-sub-row .status-glyph {
+  margin-top: 5px;
+}
+.tcard-sub-row b {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 650;
   color: var(--muted);
+}
+.tcard-sub-title {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.tcard-sub-row .agent-icon {
+  margin-top: 1.5px;
+}
+.tcard-sub.current > .tcard-sub-row {
+  font-weight: 650;
+  color: var(--text);
+}
+.tcard-sub.current > .tcard-sub-row b {
+  color: var(--text);
+}
+.tcard-sub.t-done > .tcard-sub-row .tcard-sub-title {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
 }
 
 .tcard-now {
@@ -316,11 +363,6 @@ body.route-handle {
   gap: 5px;
   font-size: 12px;
   color: var(--text-2);
-}
-.tcard-now b {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--text);
 }
 
 .tcard.drop-over {
@@ -1238,10 +1280,6 @@ button:hover .mini-card.c {
   opacity: 0;
 }
 
-.tcard-now .agent-icon {
-  margin-right: -1px;
-}
-
 .empty-project {
   width: 100%;
   padding: 10px;
@@ -1689,7 +1727,9 @@ button:hover .mini-card.c {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  overflow: hidden;
+  /* 截在文字区的边上：超出的那行不会从底下的内边距里露出半截 */
+  overflow: clip;
+  overflow-clip-margin: content-box;
   margin-top: 5px;
   padding: 5px 8px;
   border-radius: 8px;
@@ -1863,17 +1903,32 @@ button.child-check:hover {
   flex: 1;
   min-width: 0;
 }
+/* 标题紧跟在编号后面，长了就跟着折行，不会整段掉到编号下面 */
 .child-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
   font-size: 12.5px;
   font-weight: 550;
 }
 .child-title .ref {
-  min-width: 0;
+  margin-right: 6px;
   font-size: 10.5px;
+}
+/* 没填提示词时，鼠标移到这一行上「＋ 提示词」才接在标题末尾冒出来，平时不占地方、不空出一行 */
+.child-title > .prompt-field.mini.inline-display.empty {
+  display: none;
+  margin-left: 6px;
+  vertical-align: top;
+}
+.child:hover .child-title > .prompt-field.mini.inline-display.empty {
+  display: inline-block;
+}
+/* 改标题时，输入框接在编号后面占满这一行 */
+.child-title:has(> .inline-input) {
+  display: flex;
+  align-items: baseline;
+}
+.child-title > .inline-input {
+  flex: 1;
+  min-width: 0;
 }
 .child.done .child-title {
   color: var(--muted);
@@ -2613,7 +2668,12 @@ button.child-check:hover {
   opacity: 1;
 }
 .task-body.compact .child-title {
-  flex-wrap: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.task-body.compact .child-title .ref {
+  margin-right: 0;
 }
 .task-body.compact .child-title > .inline-display:not(.prompt-field) {
   min-width: 0;
@@ -2623,6 +2683,7 @@ button.child-check:hover {
 }
 .task-body.compact .child-title .prompt-field.mini.inline-display.empty {
   flex: none;
+  margin-left: auto;
 }
 
 /* ---------- 右键菜单：就地换状态 ---------- */
