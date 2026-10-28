@@ -142,6 +142,26 @@ class DragOutSensor implements SensorInstance {
   }
 }
 
+/**
+ * 只往外拖提示词、不参与排序的元素（比如任务卡上的一行子任务）：按住拖进别的软件的输入框，松手粘贴。
+ * 拦住冒泡，外面的卡片不会跟着被拖走（按在 draggable 上时 CardPointerSensor 本来就让开）
+ */
+export function promptDrag(text: string, slip?: DragOut['slip']) {
+  return {
+    draggable: true,
+    onDragStart: (e: ReactDragEvent) => {
+      e.stopPropagation()
+      e.dataTransfer.setData('text/plain', text)
+      e.dataTransfer.setData(INTERNAL_DRAG, '1')
+      e.dataTransfer.effectAllowed = 'copy'
+      if (slip) setSlipImage(e.dataTransfer, slip)
+    },
+    onDragEnd: (e: ReactDragEvent) => {
+      if (e.dataTransfer.dropEffect !== 'none') toast('✓ 提示词送过去了')
+    }
+  }
+}
+
 /** 拖动时跟着鼠标的小纸条：先画在屏幕外面，浏览器拍完就拿掉 */
 function setSlipImage(dt: DataTransfer, slip: { title: string; color: string }): void {
   const el = document.createElement('div')

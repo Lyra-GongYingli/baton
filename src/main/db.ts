@@ -345,12 +345,13 @@ export function listProjects(): ProjectTree[] {
       'SELECT id, task_id, parent_id, ref, title, status, agent, prompt, scheduled_on FROM subtasks ORDER BY position, created_at'
     )
     .all() as Row[]
-  const brief = (s: Row): SubtaskBrief => ({
+  const brief = (s: Row, t: Task): SubtaskBrief => ({
     id: s.id as string,
     ref: Number(s.ref),
     title: s.title as string,
     status: s.status as Status,
     agent: s.agent as Assignee,
+    prompt: s.prompt ? expandPrompt(String(s.prompt), t) : '',
     scheduledOn: (s.scheduled_on as string) ?? '',
     children: []
   })
@@ -383,8 +384,10 @@ export function listProjects(): ProjectTree[] {
               }
             : null,
           statuses: mine.map((s) => s.status as Status),
-          subtasks: mine.map((s) => ({ ...brief(s), children: subRows.filter((c) => c.parent_id === s.id).map(brief) })),
-          currentPrompt: current?.prompt ? expandPrompt(String(current.prompt), t) : '',
+          subtasks: mine.map((s) => ({
+            ...brief(s, t),
+            children: subRows.filter((c) => c.parent_id === s.id).map((c) => brief(c, t))
+          })),
           span: days.length ? { from: days[0], to: days[days.length - 1], overdue: days[0] < now } : null,
           unscheduled: open.length - days.length
         }

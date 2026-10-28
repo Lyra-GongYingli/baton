@@ -514,11 +514,9 @@ function TaskCard({
   )
 }
 
-/** 拖出去时带的提示词：任务自己的，没有就用当前子任务（第一个没做完的）的 */
-function detailPrompt({ task, subtasks }: TaskDetail): string {
-  if (task.prompt) return expandPrompt(task.prompt, task)
-  const current = subtasks.find((s) => !s.parentId && s.status !== 'done')
-  return current?.prompt ? expandPrompt(current.prompt, task) : ''
+/** 拖整个任务出去时带的提示词：只是任务自己的（子任务、子子任务用卡片里各自的复制图标拖） */
+function detailPrompt({ task }: TaskDetail): string {
+  return task.prompt ? expandPrompt(task.prompt, task) : ''
 }
 
 /** 没有进行中的任务时挂一张空卡片 */

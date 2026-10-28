@@ -83,21 +83,21 @@ export interface TaskSummary extends Task {
   statuses: Status[]
   /** 按顺序的全部子任务，各自带着子子任务；任务卡上整个列出来 */
   subtasks: SubtaskBrief[]
-  /** 当前子任务的完整提示词，占位符已替换（拖拽时要同步拿到） */
-  currentPrompt: string
   /** 任务的时间：没做完的子任务排在哪几天（最早 ~ 最晚）；有排在今天以前的就是逾期。都没排就是 null */
   span: { from: string; to: string; overdue: boolean } | null
   /** 没做完、也还没排日子的子任务有几个 */
   unscheduled: number
 }
 
-/** 任务卡上列出来的一个子任务或子子任务（不带提示词） */
+/** 任务卡上列出来的一个子任务或子子任务 */
 export interface SubtaskBrief {
   id: string
   ref: number
   title: string
   status: Status
   agent: Assignee
+  /** 完整提示词，占位符已替换（按住这一行拖出去时要同步拿到）；没填是空字符串 */
+  prompt: string
   /** 哪天做（YYYY-MM-DD），没排是空字符串；子子任务不用 */
   scheduledOn: string
   /** 子子任务（只有子任务才有） */
