@@ -11,11 +11,13 @@ import {
   Tray
 } from 'electron'
 import { join } from 'node:path'
-import type { BatonApi, MainEvent } from '../shared/types'
+import { HOOK_AGENTS, type BatonApi, type HookAgent, type MainEvent } from '../shared/types'
 import * as db from './db'
+import * as agentHooks from './agentHooks'
 import { claudeCodeStatus, connectClaudeCode } from './claudeCode'
 import * as dock from './dock'
 import * as line from './line'
+import * as live from './live'
 import * as mcp from './mcp'
 import * as settings from './settings'
 
@@ -136,6 +138,40 @@ function afterMutation(): void {
   refreshTray()
 }
 
+const AI_PROJECT = 'AI 任务'
+const AI_TASK = 'AI 会话'
+
+/** 认不出是哪个任务的 AI 会话，自动记在哪个项目里：设置里定的；没定过、或者删掉了，用叫「AI 任务」的那个。都没有是 null */
+function aiProjectId(): string | null {
+  const id = settings.getAiProjectId()
+  return id && db.projectExists(id) ? id : db.projectIdByTitle(AI_PROJECT)
+}
+
+/**
+ * 自动记下的 AI 会话都是「AI 会话」这个任务的子任务。上次那个还在这个项目里、没做完就接着用（改了名也认），
+ * 删掉了、做完了、被挪到别的项目了，就新建一个。项目还没有的话也一起建
+ */
+function aiTaskId(): string {
+  const projectId = aiProjectId() ?? db.createProject({ title: AI_PROJECT })
+  // 记下 id：以后项目、任务改了名，也还放在这儿
+  settings.setAiProjectId(projectId)
+  const id = settings.getAiTaskId()
+  const place = id ? db.taskPlace(id) : null
+  if (id && place && place.projectId === projectId && place.status !== 'done') return id
+  const fresh = db.createTask({ projectId, title: AI_TASK })
+  settings.setAiTaskId(fresh)
+  return fresh
+}
+
+/** 接入 / 断开 Claude Code、Codex 的 hooks；接入情况变了，头像动不动的规则也跟着变 */
+function setHooks(agent: HookAgent, on: boolean): { ok: boolean; message: string } {
+  const res = on
+    ? agentHooks.connectHooks(agent, mcp.HOOKS_URL, settings.getMcpToken())
+    : agentHooks.disconnectHooks(agent)
+  broadcast('live-changed')
+  return res
+}
+
 type Handlers = {
   [K in keyof BatonApi]: (
     ...args: Parameters<BatonApi[K]>
@@ -168,6 +204,7 @@ const handlers: Handlers = {
   updateSubtask: db.updateSubtask,
   arrangeSubtasks: db.arrangeSubtasks,
   deleteSubtask: db.deleteSubtask,
+  moveSubtask: db.moveSubtask,
 
   processBoard: db.processBoard,
   calendar: db.calendar,
@@ -177,6 +214,7 @@ const handlers: Handlers = {
 
   getSettings: () => ({
     ...settings.getPublicSettings(),
+    aiProjectId: aiProjectId(),
     mcp: { url: mcp.MCP_URL, token: settings.getMcpToken(), ...mcp.mcpState() }
   }),
   setCurrentTask: (id) => {
@@ -209,6 +247,13 @@ const handlers: Handlers = {
   lineInteractive: line.setLineInteractive,
   claudeCodeStatus,
   connectClaudeCode: () => connectClaudeCode(mcp.MCP_URL, settings.getMcpToken()),
+  liveBoard: () => live.liveBoard(agentHooks.hooksEnabled(mcp.HOOKS_URL, settings.getMcpToken())),
+  setAiProject: (id) => {
+    if (db.projectExists(id)) settings.setAiProjectId(id)
+  },
+  agentHooksStatus: () => HOOK_AGENTS.map((a) => agentHooks.hooksState(a, mcp.HOOKS_URL, settings.getMcpToken())),
+  connectAgentHooks: (agent) => setHooks(agent, true),
+  disconnectAgentHooks: (agent) => setHooks(agent, false),
   openMainWindow: (taskId) => {
     showMainWindow(taskId)
     if (!settings.getDock().pinned) dock.setDockOpen(false)
@@ -229,6 +274,7 @@ const MUTATIONS = new Set<keyof BatonApi>([
   'updateSubtask',
   'arrangeSubtasks',
   'deleteSubtask',
+  'moveSubtask',
   'assignSubtask'
 ])
 
@@ -266,11 +312,24 @@ if (!app.requestSingleInstanceLock()) {
     if (firstRun && db.listProjects().length === 0) db.createProject({ title: '我的项目' })
     dock.createDock({ load: loadRenderer, webPreferences })
     line.createLine({ load: loadRenderer, webPreferences })
-    // 让 Claude Code 等 AI 工具能直接操控 Baton；AI 改了东西就刷新界面并提示一下
-    mcp.startMcp(settings.getMcpToken(), (summary) => {
-      afterMutation()
-      broadcast('remote-change', `AI ${summary}`)
+    // Claude Code、Codex 通过 hooks 报上来的会话：认出在做哪个任务就标成进行中，认不出来就记成「AI 会话」里的一个子任务；
+    // 会话列表变了就刷新
+    live.startLive({
+      onLive: () => broadcast('live-changed'),
+      onData: afterMutation,
+      onNotice: (text) => broadcast('remote-change', text),
+      aiProject: aiProjectId,
+      aiTask: aiTaskId
     })
+    // 让 Claude Code 等 AI 工具能直接操控 Baton；AI 改了东西就刷新界面并提示一下
+    mcp.startMcp(
+      settings.getMcpToken(),
+      (summary) => {
+        afterMutation()
+        broadcast('remote-change', `AI ${summary}`)
+      },
+      live.handleHook
+    )
     createTray()
     registerShortcuts()
     // 第一次启动时展开侧边栏打个招呼，并写下设置文件，下次就不算第一次了

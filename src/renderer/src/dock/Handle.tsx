@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { titleFromText } from '../../../shared/prompt'
 import type { DockState, LineState } from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
 import { useDelayedClick } from '../components/Copy'
-import { cx, titleFromText } from '../util'
+import { cx } from '../util'
 import { Icon, useDropTarget } from './parts'
 
 /**

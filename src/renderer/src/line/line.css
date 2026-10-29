@@ -139,6 +139,11 @@ body.route-line {
 .line-card.placeholder {
   opacity: 0.35;
 }
+/* 别的卡片上的子任务拖过来：这张卡片描一圈虚线（停在哪个子任务上，那一行也会亮） */
+.line-card.cross-over {
+  outline: 2.5px dashed var(--c);
+  outline-offset: 4px;
+}
 
 .line-task-head {
   display: flex;

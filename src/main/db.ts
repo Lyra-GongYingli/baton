@@ -9,12 +9,16 @@ import type {
   CalendarBoard,
   CalendarItem,
   Dashboard,
+  HookAgent,
   LineBoard,
+  LiveItem,
+  LiveState,
   ProcessBoard,
   Project,
   ProjectTree,
   Status,
   Subtask,
+  SubtaskBrief,
   Task,
   TaskDetail,
   TaskSummary
@@ -23,6 +27,8 @@ import type {
 type Row = Record<string, SQLInputValue>
 
 let db: DatabaseSync
+/** 这次打开时才给 agent_sessions 加上 title 列：上一版给每个会话单独建的任务，要收拢一次 */
+let sessionTitlesAdded = false
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -88,6 +94,24 @@ CREATE TABLE IF NOT EXISTS logs (
   content    TEXT NOT NULL,
   source     TEXT NOT NULL DEFAULT 'manual',
   created_at INTEGER NOT NULL
+);
+
+-- Claude Code、Codex 通过 hooks 报上来的会话：这会儿在干嘛、在做哪一项。存下来，Baton 重启后还认得
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  agent      TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  item_id    TEXT NOT NULL DEFAULT '', -- 在做的任务 / 子任务 / 子子任务；空 = 还没说过话
+  state      TEXT NOT NULL DEFAULT 'idle', -- running / waiting / idle
+  cwd        TEXT NOT NULL DEFAULT '',
+  snippet    TEXT NOT NULL DEFAULT '', -- 第一句话的开头
+  pid        INTEGER NOT NULL DEFAULT 0, -- 跑 hook 的进程
+  pid_ok     INTEGER NOT NULL DEFAULT 0, -- 连着两次报的是同一个 pid，才拿它判断会话还在不在
+  started_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  ended_at   INTEGER NOT NULL DEFAULT 0, -- 会话关掉的时间，0 = 还开着。关掉的留一阵，接着用（resume）时还归到原来那一项
+  title      TEXT NOT NULL DEFAULT '', -- 自动记下的子任务用的名字（AI 给会话起的标题，还没有时是第一句话）；空 = 在做的不是自动记下的那种
+  transcript TEXT NOT NULL DEFAULT '', -- Claude Code 的对话记录文件，从里面读会话标题
+  PRIMARY KEY (agent, session_id)
 );
 `
 
@@ -210,6 +234,20 @@ function addMissingColumns(): void {
     // 以前完成的没有记时间，拿最后修改时间凑合
     db.exec("UPDATE subtasks SET done_at = updated_at WHERE status = 'done'")
   }
+
+  const sessionCols = columns('agent_sessions')
+  if (!sessionCols.includes('ended_at')) {
+    db.exec('ALTER TABLE agent_sessions ADD COLUMN ended_at INTEGER NOT NULL DEFAULT 0')
+  }
+  if (!sessionCols.includes('title')) {
+    db.exec("ALTER TABLE agent_sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+    db.exec("ALTER TABLE agent_sessions ADD COLUMN transcript TEXT NOT NULL DEFAULT ''")
+    sessionTitlesAdded = true
+  }
+}
+
+export function upgradedSessionTitles(): boolean {
+  return sessionTitlesAdded
 }
 
 /** 没有项目的任务（比如老数据）放进「未分组」 */
@@ -338,11 +376,22 @@ export function listProjects(): ProjectTree[] {
     toProject
   )
   const tasks = (db.prepare('SELECT * FROM tasks ORDER BY position, created_at').all() as Row[]).map(toTask)
+  // 子任务和子子任务一起取出来，子子任务用 parent_id 挂回去
   const subRows = db
     .prepare(
-      "SELECT id, task_id, ref, title, status, agent, prompt, scheduled_on FROM subtasks WHERE parent_id = '' ORDER BY position"
+      'SELECT id, task_id, parent_id, ref, title, status, agent, prompt, scheduled_on FROM subtasks ORDER BY position, created_at'
     )
     .all() as Row[]
+  const brief = (s: Row, t: Task): SubtaskBrief => ({
+    id: s.id as string,
+    ref: Number(s.ref),
+    title: s.title as string,
+    status: s.status as Status,
+    agent: s.agent as Assignee,
+    prompt: s.prompt ? expandPrompt(String(s.prompt), t) : '',
+    scheduledOn: (s.scheduled_on as string) ?? '',
+    children: []
+  })
 
   const now = todayStr()
   return projects.map((p) => ({
@@ -350,7 +399,7 @@ export function listProjects(): ProjectTree[] {
     tasks: tasks
       .filter((t) => t.projectId === p.id)
       .map((t): TaskSummary => {
-        const mine = subRows.filter((s) => s.task_id === t.id)
+        const mine = subRows.filter((s) => s.task_id === t.id && !s.parent_id)
         const current = mine.find((s) => s.status !== 'done')
         // 任务的时间 = 没做完的子任务排在哪几天
         const open = mine.filter((s) => s.status !== 'done')
@@ -372,7 +421,10 @@ export function listProjects(): ProjectTree[] {
               }
             : null,
           statuses: mine.map((s) => s.status as Status),
-          currentPrompt: current?.prompt ? expandPrompt(String(current.prompt), t) : '',
+          subtasks: mine.map((s) => ({
+            ...brief(s, t),
+            children: subRows.filter((c) => c.parent_id === s.id).map((c) => brief(c, t))
+          })),
           span: days.length ? { from: days[0], to: days[days.length - 1], overdue: days[0] < now } : null,
           unscheduled: open.length - days.length
         }
@@ -402,6 +454,16 @@ export function updateProject(id: string, patch: Partial<Pick<Project, 'title' |
 export function deleteProject(id: string): void {
   db.prepare('DELETE FROM tasks WHERE project_id = ?').run(id)
   db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+}
+
+export function projectExists(id: string): boolean {
+  return Boolean(db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id))
+}
+
+/** 按名字找项目，同名的取排在前面的；没有是 null */
+export function projectIdByTitle(title: string): string | null {
+  const r = db.prepare('SELECT id FROM projects WHERE title = ? ORDER BY position, created_at LIMIT 1').get(title) as Row | undefined
+  return r ? (r.id as string) : null
 }
 
 export function reorderProjects(ids: string[]): void {
@@ -454,6 +516,12 @@ export function updateTask(
 
 export function deleteTask(id: string): void {
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+}
+
+/** 任务在哪个项目、什么状态；删掉了是 null */
+export function taskPlace(id: string): { projectId: string; status: Status } | null {
+  const r = db.prepare('SELECT project_id, status FROM tasks WHERE id = ?').get(id) as Row | undefined
+  return r ? { projectId: r.project_id as string, status: r.status as Status } : null
 }
 
 /** index 是在目标项目「未完成任务」里的位置（已完成的任务单独折叠，不参与排序） */
@@ -607,6 +675,47 @@ export function arrangeSubtasks(taskId: string, layout: { id: string; parentId: 
 export function subtaskInfo(id: string): { taskId: string; parentId: string; title: string } | null {
   const r = db.prepare('SELECT task_id, parent_id, title FROM subtasks WHERE id = ?').get(id) as Row | undefined
   return r ? { taskId: r.task_id as string, parentId: r.parent_id as string, title: r.title as string } : null
+}
+
+/**
+ * 把一个子任务 / 子子任务（连同它的子子任务）挪到另一个任务，排在最后：
+ * parentId 是那个任务里的一个子任务时，当它的子子任务；空的话当子任务。带着子子任务的只能当子任务（最多两层）。
+ * 和拖动排序一样：变成子子任务就是简单的清单项（不接力、不分人、不排日子），提出来当子任务没排日子的排在今天。
+ * 两边的 S 编号、状态都重新对齐
+ */
+export function moveSubtask(id: string, taskId: string, parentId = ''): void {
+  const row = db.prepare('SELECT task_id, parent_id, scheduled_on FROM subtasks WHERE id = ?').get(id) as Row | undefined
+  if (!row || !db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(taskId)) return
+  const hasChildren = Boolean(db.prepare('SELECT 1 FROM subtasks WHERE parent_id = ?').get(id))
+  const target = parentId ? subtaskInfo(parentId) : null
+  const parent = target && target.taskId === taskId && !target.parentId && parentId !== id && !hasChildren ? parentId : ''
+  const fromTask = row.task_id as string
+  const fromParent = row.parent_id as string
+  if (fromTask === taskId && fromParent === parent) return
+  const max = db
+    .prepare('SELECT COALESCE(MAX(position), 0) AS p FROM subtasks WHERE task_id = ? AND parent_id = ?')
+    .get(taskId, parent) as Row
+  const cols: Record<string, SQLInputValue> = {
+    task_id: taskId,
+    parent_id: parent,
+    position: Number(max.p) + 1,
+    chained: 0,
+    updated_at: Date.now()
+  }
+  if (parent) {
+    cols.agent = ''
+    cols.scheduled_on = ''
+  } else if (!row.scheduled_on) {
+    cols.scheduled_on = todayStr()
+  }
+  update('subtasks', id, cols)
+  db.prepare('UPDATE subtasks SET task_id = ? WHERE parent_id = ?').run(taskId, id)
+  for (const p of [fromParent, parent]) if (p) syncSubtaskStatus(p)
+  for (const t of new Set([fromTask, taskId])) {
+    renumberSubtasks(t)
+    touchTask(t)
+    syncTaskStatus(t)
+  }
 }
 
 export function deleteSubtask(id: string): void {
@@ -845,4 +954,152 @@ export function dashboard(): Dashboard {
     overdue,
     upcoming
   }
+}
+
+// ---------- AI 会话（hooks） ----------
+
+export interface AgentSessionRow {
+  agent: HookAgent
+  sessionId: string
+  itemId: string
+  state: LiveState
+  cwd: string
+  snippet: string
+  pid: number
+  pidOk: boolean
+  startedAt: number
+  updatedAt: number
+  /** 关掉的时间，0 = 还开着 */
+  endedAt: number
+  /** 自动记下的子任务用的名字；空 = 在做的不是自动记下的那种 */
+  title: string
+  /** Claude Code 的对话记录文件 */
+  transcript: string
+}
+
+function toAgentSession(r: Row): AgentSessionRow {
+  return {
+    agent: r.agent as HookAgent,
+    sessionId: r.session_id as string,
+    itemId: r.item_id as string,
+    state: r.state as LiveState,
+    cwd: r.cwd as string,
+    snippet: r.snippet as string,
+    pid: Number(r.pid),
+    pidOk: Boolean(r.pid_ok),
+    startedAt: Number(r.started_at),
+    updatedAt: Number(r.updated_at),
+    endedAt: Number(r.ended_at),
+    title: r.title as string,
+    transcript: r.transcript as string
+  }
+}
+
+export function listAgentSessions(): AgentSessionRow[] {
+  return (db.prepare('SELECT * FROM agent_sessions ORDER BY started_at').all() as Row[]).map(toAgentSession)
+}
+
+export function getAgentSession(agent: HookAgent, sessionId: string): AgentSessionRow | null {
+  const r = db.prepare('SELECT * FROM agent_sessions WHERE agent = ? AND session_id = ?').get(agent, sessionId) as Row | undefined
+  return r ? toAgentSession(r) : null
+}
+
+export function saveAgentSession(s: AgentSessionRow): void {
+  db.prepare(
+    `INSERT INTO agent_sessions (agent, session_id, item_id, state, cwd, snippet, pid, pid_ok, started_at, updated_at, ended_at, title, transcript)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (agent, session_id) DO UPDATE SET
+       item_id = excluded.item_id, state = excluded.state, cwd = excluded.cwd, snippet = excluded.snippet,
+       pid = excluded.pid, pid_ok = excluded.pid_ok, updated_at = excluded.updated_at, ended_at = excluded.ended_at,
+       title = excluded.title, transcript = excluded.transcript`
+  ).run(
+    s.agent,
+    s.sessionId,
+    s.itemId,
+    s.state,
+    s.cwd,
+    s.snippet,
+    s.pid,
+    s.pidOk ? 1 : 0,
+    s.startedAt,
+    s.updatedAt,
+    s.endedAt,
+    s.title,
+    s.transcript
+  )
+}
+
+/** 同一个 AI 先前自动记下、标题一样、还没做完的子任务（接着上一段对话开的新会话归到它上面）；没有是 null */
+export function autoItemWithTitle(agent: HookAgent, title: string): string | null {
+  const r = db
+    .prepare(
+      `SELECT a.item_id FROM agent_sessions a JOIN subtasks s ON s.id = a.item_id
+       WHERE a.agent = ? AND a.title = ? AND s.status != 'done' ORDER BY a.updated_at DESC LIMIT 1`
+    )
+    .get(agent, title) as Row | undefined
+  return r ? (r.item_id as string) : null
+}
+
+/**
+ * 上一版给一个会话单独建的任务：任务里只有这一个子任务、名字一样，没写目标和提示词。
+ * 是的话返回那个任务和它所在的项目，不是返回 null
+ */
+export function loneWrapper(subtaskId: string): { taskId: string; projectId: string } | null {
+  const r = db
+    .prepare(
+      `SELECT t.id, t.project_id FROM subtasks s JOIN tasks t ON t.id = s.task_id
+       WHERE s.id = ? AND s.parent_id = '' AND t.title = s.title AND t.goal = '' AND t.prompt = ''
+         AND (SELECT COUNT(*) FROM subtasks x WHERE x.task_id = t.id) = 1`
+    )
+    .get(subtaskId) as Row | undefined
+  return r ? { taskId: r.id as string, projectId: r.project_id as string } : null
+}
+
+/** 删掉一个会话；真删了返回 true */
+export function deleteAgentSession(agent: HookAgent, sessionId: string): boolean {
+  return Number(db.prepare('DELETE FROM agent_sessions WHERE agent = ? AND session_id = ?').run(agent, sessionId).changes) > 0
+}
+
+/** 所有填了提示词的子任务、子子任务和任务，占位符已替换。子任务排在前面：一样的话先算更具体的那个 */
+export function promptCandidates(): { id: string; text: string }[] {
+  const tasks = new Map((db.prepare('SELECT * FROM tasks').all() as Row[]).map((r) => [r.id as string, toTask(r)]))
+  const out: { id: string; text: string }[] = []
+  for (const r of db.prepare("SELECT id, task_id, prompt FROM subtasks WHERE prompt != ''").all() as Row[]) {
+    const t = tasks.get(r.task_id as string)
+    if (t) out.push({ id: r.id as string, text: expandPrompt(String(r.prompt), t) })
+  }
+  for (const t of tasks.values()) if (t.prompt) out.push({ id: t.id, text: expandPrompt(t.prompt, t) })
+  return out
+}
+
+/** 一项（任务、子任务或子子任务）现在的状态和执行者，判断要不要改成进行中；找不到是 null */
+export function itemState(id: string): { kind: 'task' | 'subtask'; status: Status; agent: Assignee; parentId: string } | null {
+  const s = db.prepare('SELECT status, agent, parent_id FROM subtasks WHERE id = ?').get(id) as Row | undefined
+  if (s) return { kind: 'subtask', status: s.status as Status, agent: s.agent as Assignee, parentId: s.parent_id as string }
+  const t = db.prepare('SELECT status FROM tasks WHERE id = ?').get(id) as Row | undefined
+  return t ? { kind: 'task', status: t.status as Status, agent: '', parentId: '' } : null
+}
+
+/** 会话列表里怎么写这一项：编号、标题、属于哪个任务、提示词；删掉了是 null */
+export function liveItem(id: string): LiveItem | null {
+  const sub = db.prepare('SELECT task_id, parent_id, ref, title, status, prompt FROM subtasks WHERE id = ?').get(id) as Row | undefined
+  const taskId = sub ? (sub.task_id as string) : id
+  const row = db
+    .prepare('SELECT t.*, p.color FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?')
+    .get(taskId) as Row | undefined
+  if (!row) return null
+  const t = toTask(row)
+  const base = { id, taskId, taskTitle: t.title, color: (row.color as string) || '#9CA3AF' }
+  if (!sub) return { ...base, kind: 'task', label: '', title: t.title, status: t.status, prompt: t.prompt ? expandPrompt(t.prompt, t) : '' }
+  let label = `S${sub.ref}`
+  if (sub.parent_id) {
+    // 子子任务的编号是在上级子任务里的顺序，和界面上一样现算
+    const parent = db.prepare('SELECT ref FROM subtasks WHERE id = ?').get(sub.parent_id) as Row | undefined
+    const siblings = (
+      db.prepare('SELECT id FROM subtasks WHERE parent_id = ? ORDER BY position, created_at').all(sub.parent_id) as Row[]
+    ).map((r) => r.id)
+    label = `S${parent ? Number(parent.ref) : '?'}.${siblings.indexOf(id) + 1}`
+  }
+  const prompt = sub.prompt ? expandPrompt(String(sub.prompt), t) : ''
+  return { ...base, kind: 'subtask', label, title: sub.title as string, status: sub.status as Status, prompt }
 }

@@ -1,13 +1,16 @@
 import { DndContext, DragOverlay, MeasuringStrategy, closestCenter } from '@dnd-kit/core'
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { nextStatus } from '../../../shared/agents'
-import { expandPrompt, previousOf } from '../../../shared/prompt'
+import { expandPrompt, previousOf, titleFromText } from '../../../shared/prompt'
 import { STATUS_LABEL, type Subtask, type TaskDetail } from '../../../shared/types'
 import { api } from '../api'
+import { AgentIcon } from '../components/AgentIcon'
 import { AgentPicker } from '../components/AgentPicker'
+import { Copyable } from '../components/Copy'
+import { crossTarget, findCrossTarget, setCrossTarget, useCrossTarget, type CrossTarget } from '../components/crossDrop'
 import { DateChip } from '../components/DatePicker'
 import { DeleteButton } from '../components/DeleteButton'
 import { InlineEdit, renderPrompt } from '../components/InlineEdit'
@@ -16,13 +19,16 @@ import { markDragging, useDndSensors, type DragHandle } from '../components/Sort
 import { openStatusMenu } from '../components/StatusMenu'
 import { StatusPicker } from '../components/StatusPicker'
 import { toast, useDropTarget } from '../dock/parts'
-import { cx, titleFromText } from '../util'
+import { busyOf, LiveMark, ownLive, shownState, useLiveBoard, useLiveOf } from '../live'
+import { cx } from '../util'
 
 // 子任务 list：子任务和它下面的子子任务排成一棵两层的树。
 //   接力子任务（chained）——和上一个用实线连着，圆形节点，上一个完成后才轮到它
 //   独立子任务 ——和上一个断开，方形节点，随时可以做
 // 任何一行都能按住拖：上下拖换位置，拖的时候往右挪 = 变成上面那个子任务的子子任务，往左挪 = 提出来变成子任务。
 // 带着子子任务的子任务被拖动时，子子任务跟着走；它不能再被放进别的子任务里（最多两层）。
+// 做完的子任务（连同它的子子任务）收进最下面的「已完成」，一行一个，list 里只排没做完的。
+// 晾衣绳上还能拖到别的任务卡片：停在那张卡片的某个子任务上 = 当它的子子任务，停在卡片别处 = 当子任务排在最后。
 
 /** 往右拖多少像素算缩进一层 */
 const INDENT = 28
@@ -52,6 +58,27 @@ function withParents(slots: Slot[]): { id: string; depth: 0 | 1; parentId: strin
     if (s.depth === 0) parent = s.id
     return { ...s, parentId: s.depth === 0 ? '' : parent }
   })
+}
+
+/**
+ * 拖完以后的完整顺序：收在「已完成」里的子任务（连同它的子子任务）没参与拖动，留在原来那一块的位置，
+ * 没做完的按拖完的顺序依次填进其余的位置。这样做完的那几个 S 编号不变
+ */
+function keepDone(all: Slot[], openMoved: Slot[], doneIds: Set<string>): Slot[] {
+  const blocks = (list: Slot[]): Slot[][] =>
+    list.reduce<Slot[][]>((acc, s) => {
+      if (s.depth === 0 || acc.length === 0) acc.push([s])
+      else acc[acc.length - 1].push(s)
+      return acc
+    }, [])
+  const open = blocks(openMoved)
+  const out: Slot[] = []
+  for (const b of blocks(all)) {
+    if (doneIds.has(b[0].id)) out.push(...b)
+    else out.push(...(open.shift() ?? []))
+  }
+  for (const b of open) out.push(...b)
+  return out
 }
 
 /** 拖到 over 上、横向挪了 offsetX 时，松手会落在第几层 */
@@ -84,6 +111,9 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
   const [overId, setOverId] = useState<string | null>(null)
   const [offsetX, setOffsetX] = useState(0)
   const [adding, setAdding] = useState<string | null>(null)
+  // 按下时鼠标在哪：加上挪了多少，就是现在在哪，用来找有没有拖到别的任务卡片上
+  const start = useRef({ x: 0, y: 0 })
+  const cross = useCrossTarget()
 
   const byId = new Map<string, Subtask>(subtasks.flatMap((s) => [[s.id, s] as const, ...s.children.map((c) => [c.id, c] as const)]))
   const rows: Row[] = withParents(slots).flatMap((s, i, all) => {
@@ -91,18 +121,28 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
     if (!sub) return []
     return [{ ...s, sub, hasChildren: s.depth === 0 && all[i + 1]?.depth === 1 }]
   })
-  // 拖着子任务时，把它的子子任务先藏起来，松手后跟着它走
-  const visible = activeId ? rows.filter((r) => r.parentId !== activeId) : rows
-  const projected = activeId && overId ? projectDepth(visible, activeId, overId, offsetX) : null
-
   const topLevel = rows.filter((r) => r.depth === 0).map((r) => r.sub)
   const currentId = topLevel.find((s) => s.status !== 'done')?.id
+  // 做完的子任务（连同它的子子任务）收进最下面的「已完成」，list 里只排没做完的
+  const done = topLevel.filter((s) => s.status === 'done')
+  const doneIds = new Set(done.map((s) => s.id))
+  const openRows = rows.filter((r) => !doneIds.has(r.depth === 0 ? r.id : r.parentId))
+  // 拖着子任务时，把它的子子任务先藏起来，松手后跟着它走
+  const visible = activeId ? openRows.filter((r) => r.parentId !== activeId) : openRows
+  const projected = activeId && overId ? projectDepth(visible, activeId, overId, offsetX) : null
 
   const reset = (): void => {
     markDragging(false)
     setActiveId(null)
     setOverId(null)
     setOffsetX(0)
+    setCrossTarget(null)
+  }
+
+  /** 拖到别的任务卡片上松手：挪过去。带着子子任务的只能当子任务 */
+  const moveAcross = (id: string, target: CrossTarget): void => {
+    api.moveSubtask(id, target.taskId, target.parentId)
+    toast(`✓ 挪到「${target.title}」${target.parentId ? `的 ${target.label} 下面` : ''}`)
   }
 
   const drop = (overRowId: string | null): void => {
@@ -115,11 +155,12 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
     }))
     const kids = rows.filter((r) => r.parentId === activeId).map((r) => ({ id: r.id, depth: r.depth }))
     if (kids.length) moved.splice(moved.findIndex((r) => r.id === activeId) + 1, 0, ...kids)
-    if (moved.map((s) => `${s.id}:${s.depth}`).join('|') === slots.map((s) => `${s.id}:${s.depth}`).join('|')) return
-    setSlots(moved)
+    const next = keepDone(slots, moved, doneIds)
+    if (next.map((s) => `${s.id}:${s.depth}`).join('|') === slots.map((s) => `${s.id}:${s.depth}`).join('|')) return
+    setSlots(next)
     api.arrangeSubtasks(
       task.id,
-      withParents(moved).map(({ id, parentId }) => ({ id, parentId }))
+      withParents(next).map(({ id, parentId }) => ({ id, parentId }))
     )
   }
 
@@ -131,15 +172,24 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
         sensors={sensors}
         collisionDetection={closestCenter}
         measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
-        onDragStart={({ active: a }) => {
+        onDragStart={({ active: a, activatorEvent }) => {
           markDragging(true)
           setActiveId(String(a.id))
           setOverId(String(a.id))
+          const e = activatorEvent as PointerEvent | null
+          start.current = { x: e?.clientX ?? 0, y: e?.clientY ?? 0 }
         }}
-        onDragMove={({ delta }) => setOffsetX(delta.x)}
+        onDragMove={({ active: a, delta }) => {
+          setOffsetX(delta.x)
+          const target = findCrossTarget(start.current.x + delta.x, start.current.y + delta.y, task.id)
+          const hasChildren = rows.some((r) => r.parentId === String(a.id))
+          setCrossTarget(target && hasChildren ? { ...target, parentId: '', label: '' } : target)
+        }}
         onDragOver={({ over }) => setOverId(over ? String(over.id) : null)}
-        onDragEnd={({ over }) => {
-          drop(over ? String(over.id) : null)
+        onDragEnd={({ active: a, over }) => {
+          const target = crossTarget()
+          if (target) moveAcross(String(a.id), target)
+          else drop(over ? String(over.id) : null)
           reset()
         }}
         onDragCancel={reset}
@@ -161,6 +211,7 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
                     current={r.id === currentId}
                     compact={compact}
                     label={parent ? `S${parent.ref}.${siblings.findIndex((x) => x.id === r.id) + 1}` : ''}
+                    away={Boolean(activeId && cross)}
                     onAddChild={() => setAdding(r.id)}
                   />
                   {adding === groupParent && isLastOfGroup && r.id !== activeId && (
@@ -177,9 +228,16 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
             {active && (
               <div className="tree-preview" style={{ '--c': detail.project.color } as CSSProperties}>
                 <span className="ref">{active.depth === 0 ? `S${active.sub.ref}` : '·'}</span>
-                {active.sub.title}
+                {/* 标题太长就截掉，后面「挪到哪」的提示要一直看得见 */}
+                <span className="tree-preview-title">{active.sub.title}</span>
                 {active.hasChildren && <span className="muted">＋{active.sub.children.length} 个子子任务</span>}
-                <span className="tree-preview-hint">{projected === 1 ? '→ 放进上面的子任务' : '→ 作为子任务'}</span>
+                <span className="tree-preview-hint">
+                  {cross
+                    ? `→ 挪到「${cross.title}」${cross.parentId ? `的 ${cross.label} 下面` : ''}`
+                    : projected === 1
+                      ? '→ 放进上面的子任务'
+                      : '→ 作为子任务'}
+                </span>
               </div>
             )}
           </DragOverlay>,
@@ -187,6 +245,7 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
         )}
       </DndContext>
       <AddStop taskId={task.id} hasAny={subtasks.length > 0} />
+      <DoneStops subtasks={done} />
     </div>
   )
 }
@@ -199,6 +258,7 @@ function TreeRow({
   current,
   compact,
   label,
+  away,
   onAddChild
 }: {
   row: Row
@@ -208,6 +268,8 @@ function TreeRow({
   current: boolean
   compact?: boolean
   label: string
+  /** 正拖到别的任务卡片上：这边的插入线先藏起来 */
+  away: boolean
   onAddChild: () => void
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } = useSortable({ id: row.id })
@@ -220,17 +282,20 @@ function TreeRow({
   }
   // 被拖着的那一行变成一条插入线，缩进表示松手后落在哪一层
   if (isDragging) {
-    return <div ref={setNodeRef} style={drag.style} className={cx('tree-indicator', depth === 1 && 'nested')} />
+    return <div ref={setNodeRef} style={drag.style} className={cx('tree-indicator', depth === 1 && 'nested', away && 'away')} />
   }
-  if (row.depth === 1) return <ChildRow c={row.sub} label={label} detail={detail} drag={drag} />
+  if (row.depth === 1) return <ChildRow c={row.sub} label={label} parentLabel={label.split('.')[0]} detail={detail} drag={drag} />
   const index = topLevel.findIndex((s) => s.id === row.id)
+  // 前后紧挨着的那个做完、收进「已完成」了：这一头没有能连上的，不画接力线
+  const prev = topLevel[index - 1]
+  const next = topLevel[index + 1]
   return (
     <Stop
       s={row.sub}
       detail={detail}
       siblings={topLevel}
-      first={index === 0}
-      startsChain={Boolean(topLevel[index + 1]?.chained)}
+      first={!prev || prev.status === 'done'}
+      startsChain={Boolean(next?.chained && next.status !== 'done')}
       current={current}
       compact={compact}
       drag={drag}
@@ -265,8 +330,12 @@ function Stop({
   const prev = previousOf(s, siblings)
   const chained = s.chained && !first
   const waiting = prev && prev.status !== 'done'
-  const busy = s.status === 'active'
+  const live = useLiveOf(s.id)
+  const mine = ownLive(live, s.agent)
+  const { enabled } = useLiveBoard()
+  const busy = busyOf(enabled, s.agent, s.status, mine)
   const next = nextStatus(s.status)
+  const crossOver = useCrossTarget()?.parentId === s.id
 
   // 把文字扔到这个子任务上 = 加一个子子任务，文字就是它的提示词
   const drop = useDropTarget(async (text) => {
@@ -283,8 +352,10 @@ function Stop({
         `s-${s.status}`,
         chained || startsChain ? 'chained' : 'solo',
         current && 'current',
-        drop.over && 'drop-over'
+        (drop.over || crossOver) && 'drop-over'
       )}
+      data-drop-sub={s.id}
+      data-drop-label={`S${s.ref}`}
       {...drop.props}
     >
       {!first && (
@@ -325,7 +396,14 @@ function Stop({
             <InlineEdit value={s.title} placeholder="子任务名" onSave={(title) => api.updateSubtask(s.id, { title })} />
             {/* 状态是主角；谁在做只是旁边一个小头像 */}
             <span className="stop-tags">
-              <AgentPicker value={s.agent} size={16} busy={busy} onChange={(agent) => api.assignSubtask(s.id, agent)} />
+              <AgentPicker
+                value={s.agent}
+                size={16}
+                busy={busy}
+                live={shownState(mine, s.status)}
+                onChange={(agent) => api.assignSubtask(s.id, agent)}
+              />
+              {live && !mine && <LiveMark itemId={s.id} status={s.status} size={16} />}
               <StatusPicker value={s.status} onChange={(status) => api.updateSubtask(s.id, { status })} />
             </span>
           </div>
@@ -369,7 +447,20 @@ function Stop({
 }
 
 /** 子子任务：状态 + 标题 + 提示词。左边的小方块点一下换到下一个状态，右边的标签点开随便换 */
-function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detail: TaskDetail; drag: DragHandle }) {
+function ChildRow({
+  c,
+  label,
+  parentLabel,
+  detail,
+  drag
+}: {
+  c: Subtask
+  label: string
+  /** 上级子任务的编号：别的卡片拖过来停在这一行上，算停在上级子任务上 */
+  parentLabel: string
+  detail: TaskDetail
+  drag: DragHandle
+}) {
   const done = c.status === 'done'
   const savePrompt = (value: string): void => {
     api.updateSubtask(c.id, { prompt: value })
@@ -379,6 +470,8 @@ function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detai
       ref={drag.setNodeRef}
       style={drag.style}
       className={cx('child', done && 'done')}
+      data-drop-sub={c.parentId}
+      data-drop-label={parentLabel}
       {...drag.attributes}
       {...drag.listeners}
       onContextMenu={(e) =>
@@ -423,8 +516,51 @@ function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detai
           />
         )}
       </div>
+      <LiveMark itemId={c.id} status={c.status} size={14} />
       <StatusPicker small value={c.status} onChange={(status) => api.updateSubtask(c.id, { status })} />
       <DeleteButton title="删除这个子子任务" onConfirm={() => api.deleteSubtask(c.id)} />
+    </div>
+  )
+}
+
+/** 做完的子任务收在最下面，点一下展开：一行一个，左边的勾点一下改回待办，右击可以换成别的状态 */
+function DoneStops({ subtasks }: { subtasks: Subtask[] }) {
+  const [open, setOpen] = useState(false)
+  if (subtasks.length === 0) return null
+  return (
+    <div className="done-stops">
+      <button className="paused-toggle" onClick={() => setOpen(!open)}>
+        {open ? '收起' : '看看'}已完成的 {subtasks.length} 个
+      </button>
+      {open &&
+        subtasks.map((s) => (
+          <div
+            key={s.id}
+            className="done-stop"
+            onContextMenu={(e) =>
+              openStatusMenu(e, {
+                title: `S${s.ref} ${s.title}`,
+                value: s.status,
+                onChange: (status) => api.updateSubtask(s.id, { status })
+              })
+            }
+          >
+            <button
+              className="done-stop-check"
+              title={`${STATUS_LABEL[s.status]} → 点一下变成「${STATUS_LABEL[nextStatus(s.status)]}」，右击可以选别的`}
+              onClick={() => api.updateSubtask(s.id, { status: nextStatus(s.status) })}
+            >
+              ✓
+            </button>
+            <span className="ref">S{s.ref}</span>
+            <Copyable className="done-stop-title">{s.title}</Copyable>
+            {s.agent && <AgentIcon agent={s.agent} size={14} />}
+            <DeleteButton
+              title={s.children.length ? `删除这个子任务和它的 ${s.children.length} 个子子任务` : '删除这个子任务'}
+              onConfirm={() => api.deleteSubtask(s.id)}
+            />
+          </div>
+        ))}
     </div>
   )
 }

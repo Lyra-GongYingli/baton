@@ -696,6 +696,9 @@ h2 {
   margin-top: 4px;
   color: var(--accent);
 }
+.mcp-msg.warn {
+  color: var(--c-paused);
+}
 
 /* ================= 总看板 ================= */
 

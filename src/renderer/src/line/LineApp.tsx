@@ -15,6 +15,7 @@ import { api, onMainEvent, useData } from '../api'
 import { cardPrompt } from '../board/TaskCard'
 import { TaskBody } from '../board/TaskBody'
 import { CopyFlash } from '../components/Copy'
+import { useCrossTarget } from '../components/crossDrop'
 import { draggingOrJustDragged, isDragging, markDragging, useDndSensors, type DragOut } from '../components/Sortable'
 import { openStatusMenu, StatusMenuHost } from '../components/StatusMenu'
 import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
@@ -204,7 +205,15 @@ export function LineApp() {
   const hangers: { key: string; node: ReactNode }[] = [
     {
       key: 'note',
-      node: <Note noteOf={noteOf} dragging={Boolean(dragged)} pinned={pinned} onOpen={openTask} onStatus={setTaskStatus} />
+      node: (
+        <Note
+          noteOf={noteOf}
+          dragging={Boolean(dragged)}
+          pinned={pinned}
+          onOpen={openTask}
+          onStatus={setTaskStatus}
+        />
+      )
     },
     ...(cards.length
       ? cards.map((d) => ({
@@ -460,6 +469,8 @@ function TaskCard({
 }) {
   const { task, project, subtasks } = detail
   const prompt = detailPrompt(detail)
+  // 别的卡片上的子任务拖过来，停在这张卡片上
+  const crossOver = useCrossTarget()?.taskId === task.id
   const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({
     id: `task:${task.id}`,
     data: {
@@ -473,8 +484,11 @@ function TaskCard({
   return (
     <div
       ref={setNodeRef}
-      className={cx('line-card', 'line-task', 'line-hit', dragging && 'placeholder')}
+      className={cx('line-card', 'line-task', 'line-hit', dragging && 'placeholder', crossOver && 'cross-over')}
       style={{ '--c': project.color } as CSSProperties}
+      // 子任务、子子任务可以从别的卡片拖进来（见 crossDrop）
+      data-drop-task={task.id}
+      data-drop-title={task.title}
       // 右击卡片空白处 / 标题：改整个任务的状态；右击子任务那一行改子任务（那边自己处理）
       onContextMenu={(e) =>
         openStatusMenu(e, {
@@ -514,11 +528,9 @@ function TaskCard({
   )
 }
 
-/** 拖出去时带的提示词：任务自己的，没有就用当前子任务（第一个没做完的）的 */
-function detailPrompt({ task, subtasks }: TaskDetail): string {
-  if (task.prompt) return expandPrompt(task.prompt, task)
-  const current = subtasks.find((s) => !s.parentId && s.status !== 'done')
-  return current?.prompt ? expandPrompt(current.prompt, task) : ''
+/** 拖整个任务出去时带的提示词：只是任务自己的（子任务、子子任务用卡片里各自的复制图标拖） */
+function detailPrompt({ task }: TaskDetail): string {
+  return task.prompt ? expandPrompt(task.prompt, task) : ''
 }
 
 /** 没有进行中的任务时挂一张空卡片 */
