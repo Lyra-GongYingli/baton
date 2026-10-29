@@ -214,6 +214,68 @@ export interface PublicSettings {
   mcp: { url: string; token: string; running: boolean; error: string | null }
 }
 
+// ---------- AI 在跑什么（hooks） ----------
+
+/** 能接 hooks、让 Baton 自己认出在跑什么的 AI */
+export type HookAgent = 'claude' | 'codex'
+
+export const HOOK_AGENTS: HookAgent[] = ['claude', 'codex']
+
+/** 一个 AI 会话这会儿在干嘛：正在跑 / 停下来等你批准 / 这一轮跑完了等你看 */
+export type LiveState = 'running' | 'waiting' | 'idle'
+
+export const LIVE_LABEL: Record<LiveState, string> = {
+  running: '正在跑',
+  waiting: '等你批准',
+  idle: '停下来了，等你看'
+}
+
+/** 会话认出来在做的那一项：任务、子任务或子子任务 */
+export interface LiveItem {
+  kind: 'task' | 'subtask'
+  id: string
+  taskId: string
+  /** S2、S2.1；整个任务是空字符串 */
+  label: string
+  title: string
+  status: Status
+  taskTitle: string
+  color: string
+}
+
+export interface LiveSession {
+  agent: HookAgent
+  sessionId: string
+  state: LiveState
+  /** 认出来在做哪一项；没认出来是 null */
+  item: LiveItem | null
+  /** 工作目录的最后一段，没认出来时靠它和第一句话分辨是哪个会话 */
+  folder: string
+  /** 这个会话第一句话的开头 */
+  snippet: string
+  startedAt: number
+  /** 最近一次收到它的动静 */
+  updatedAt: number
+}
+
+export interface LiveBoard {
+  /** 哪些 AI 接入了：接入了的，头像动不动按真的在不在跑来，不再看状态是不是进行中 */
+  enabled: Record<HookAgent, boolean>
+  sessions: LiveSession[]
+}
+
+/** 接入情况：on 已接入；outdated 接过，但地址、密钥变了或少了几个事件，要重新接一次；off 没接 */
+export interface AgentHooksState {
+  agent: HookAgent
+  status: 'on' | 'outdated' | 'off'
+  /** 写在哪个配置文件里（~ 开头） */
+  file: string
+  /** 这台电脑上有没有它的配置目录（装没装过） */
+  found: boolean
+  /** 配置文件读不了，或者 hooks 被整个关掉了 */
+  problem: string | null
+}
+
 type TaskPatch = Partial<Pick<Task, 'title' | 'goal' | 'doneCriteria' | 'prompt' | 'status'>>
 type SubtaskPatch = Partial<Pick<Subtask, 'title' | 'status' | 'agent' | 'prompt' | 'chained' | 'scheduledOn'>>
 
@@ -287,6 +349,24 @@ export interface BatonApi {
   claudeCodeStatus(): Promise<{ cli: boolean; connected: boolean }>
   /** 把 Baton 的 MCP 服务加到 Claude Code（用户级，所有项目可用） */
   connectClaudeCode(): Promise<{ ok: boolean; message: string }>
+
+  /** 正在跑的 AI 会话（Claude Code、Codex 通过 hooks 告诉 Baton 的） */
+  liveBoard(): Promise<LiveBoard>
+  /** 把一个会话归到某个任务 / 子任务 / 子子任务上；itemId 是空字符串就是解绑 */
+  bindLiveSession(agent: HookAgent, sessionId: string, itemId: string): Promise<void>
+  /** Claude Code、Codex 有没有接入自动检测 */
+  agentHooksStatus(): Promise<AgentHooksState[]>
+  /** 接入：把 Baton 的 hooks 写进它的配置文件（别人的 hooks 原样留着） */
+  connectAgentHooks(agent: HookAgent): Promise<{ ok: boolean; message: string }>
+  /** 断开：只拿掉 Baton 自己加的那几条 */
+  disconnectAgentHooks(agent: HookAgent): Promise<{ ok: boolean; message: string }>
 }
 
-export type MainEvent = 'data-changed' | 'navigate' | 'dock-state' | 'dock-show-task' | 'remote-change' | 'line-state'
+export type MainEvent =
+  | 'data-changed'
+  | 'navigate'
+  | 'dock-state'
+  | 'dock-show-task'
+  | 'remote-change'
+  | 'line-state'
+  | 'live-changed'

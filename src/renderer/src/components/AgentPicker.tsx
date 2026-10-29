@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { AGENTS } from '../../../shared/agents'
-import type { Assignee } from '../../../shared/types'
+import type { Assignee, LiveState } from '../../../shared/types'
 import { cx } from '../util'
 import { AgentIcon } from './AgentIcon'
 
@@ -10,12 +10,14 @@ export function AgentPicker({
   onChange,
   size = 22,
   busy,
+  live,
   align = 'right'
 }: {
   value: Assignee
   onChange: (agent: Assignee) => void
   size?: number
   busy?: boolean
+  live?: LiveState
   align?: 'left' | 'right'
 }) {
   const [open, setOpen] = useState(false)
@@ -38,7 +40,7 @@ export function AgentPicker({
       onPointerDown={(e) => e.stopPropagation()}
     >
       <button className="agent-picker-btn" title="谁来做？" onClick={() => setOpen(!open)}>
-        <AgentIcon agent={value} size={size} busy={busy} />
+        <AgentIcon agent={value} size={size} busy={busy} live={live} />
       </button>
       {open && (
         <div className={cx('agent-menu', `align-${align}`)}>

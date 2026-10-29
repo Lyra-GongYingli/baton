@@ -10,6 +10,7 @@ import { openStatusMenu } from '../components/StatusMenu'
 import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
 import { PromptPill, tiltOf, toast, Track, useDropTarget } from '../dock/parts'
 import { DateChip } from '../components/DatePicker'
+import { busyOf, LiveMark, ownLive, shownState, useLiveBoard, useLiveOf } from '../live'
 import { cx, titleFromText } from '../util'
 
 /** 整张任务卡带的提示词：只是任务自己的。子任务、子子任务的提示词由卡上各自那一行带 */
@@ -65,6 +66,8 @@ export function TaskCard({
         <span className="tcard-clip" />
         <div className="tcard-head">
           <Copyable className="tcard-title">{t.title}</Copyable>
+          {/* 整个任务的提示词发给了 AI：它这会儿在干嘛 */}
+          <LiveMark itemId={t.id} status={t.status} size={16} />
           <TaskStatusPicker taskId={t.id} value={t.status} />
           {copyText && <PromptPill text={copyText} />}
         </div>
@@ -95,6 +98,11 @@ export function TaskCard({
 function SubRow({ s, label, color, current }: { s: SubtaskBrief; label: string; color: string; current?: boolean }) {
   const done = s.status === 'done'
   const next = nextStatus(s.status)
+  // 有 AI 会话归到这一行上：子子任务没有执行者，就显示那个 AI
+  const live = useLiveOf(s.id)
+  const { enabled } = useLiveBoard()
+  const who = s.agent || live?.agent || ''
+  const mine = ownLive(live, who)
   return (
     <li className={cx('tcard-sub', `t-${s.status}`, current && 'current')}>
       <div
@@ -123,7 +131,8 @@ function SubRow({ s, label, color, current }: { s: SubtaskBrief; label: string; 
         </button>
         <b>{label}</b>
         <Copyable className="tcard-sub-title">{s.title}</Copyable>
-        {s.agent && <AgentIcon agent={s.agent} size={15} busy={s.status === 'active'} />}
+        {who && <AgentIcon agent={who} size={15} busy={busyOf(enabled, who, s.status, mine)} live={shownState(mine, s.status)} />}
+        {live && !mine && <LiveMark itemId={s.id} status={s.status} />}
         {!done && (s.scheduledOn || current) && (
           <DateChip
             value={s.scheduledOn}

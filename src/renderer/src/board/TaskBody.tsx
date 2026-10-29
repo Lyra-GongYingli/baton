@@ -4,6 +4,7 @@ import type { Subtask, TaskDetail } from '../../../shared/types'
 import { api } from '../api'
 import { InlineEdit } from '../components/InlineEdit'
 import { PromptBox } from '../components/PromptBox'
+import { LiveMark } from '../live'
 import { cx } from '../util'
 import { SubtaskRoute } from './SubtaskRoute'
 
@@ -19,6 +20,7 @@ export function TaskBody({ detail, compact }: { detail: TaskDetail; compact?: bo
     <div className={cx('task-body', compact && 'compact')}>
       <h2 className="dtask-title">
         <InlineEdit value={task.title} placeholder="任务名" onSave={(title) => api.updateTask(task.id, { title })} />
+        <LiveMark itemId={task.id} status={task.status} size={16} />
       </h2>
       <div className="dtask-goal">
         <InlineEdit value={task.goal} placeholder="写个目标（可选）" onSave={(goal) => api.updateTask(task.id, { goal })} />

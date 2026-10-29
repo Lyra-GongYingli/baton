@@ -1590,6 +1590,27 @@ button:hover .mini-card.c {
   transform-origin: bottom;
   animation: ear-twitch 2.6s infinite;
 }
+/* 认出来的 AI 会话：停下来等你批准亮黄点（会闪），跑完一轮亮蓝点（等你看） */
+.agent-icon .live-dot {
+  stroke: var(--panel);
+  stroke-width: 2.5;
+}
+.agent-icon.live-waiting .live-dot {
+  fill: var(--c-paused);
+  animation: soft-blink 1.2s ease-in-out infinite;
+}
+.agent-icon.live-idle .live-dot {
+  fill: var(--accent);
+}
+/* 整个任务发给了 AI：小头像跟在任务名后面 */
+.dtask-title .agent-icon {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: -2px;
+}
+.child > .agent-icon {
+  margin-top: 2px;
+}
 
 .agent-picker {
   position: relative;

@@ -4,6 +4,7 @@ import { STATUS_LABEL, type CalendarItem, type Dashboard as DashboardData, type 
 import { api, useData } from '../api'
 import { AgentIcon } from '../components/AgentIcon'
 import { StatusGlyph } from '../components/StatusPicker'
+import { useLiveBoard } from '../live'
 import { cx } from '../util'
 
 // 总看板：大窗口的首页。一排数字，一张日程热力图，项目进度、谁手上有活、每周完成、逾期和接下来几天。
@@ -311,14 +312,17 @@ function ProjectsCard({ d, tip }: { d: DashboardData; tip: TipApi }) {
 
 function AgentsCard({ d, tip }: { d: DashboardData; tip: TipApi }) {
   const max = Math.max(1, ...d.agents.map((a) => a.active))
+  const { enabled, sessions } = useLiveBoard()
   return (
     <Card title="谁手上有活" sub={<span className="muted small">条的长度 = 进行中的子任务</span>}>
       {d.agents.map((a) => {
         const name = a.agent ? AGENT_BY_ID[a.agent].name : '未分配'
+        const watched = (a.agent === 'claude' || a.agent === 'codex') && enabled[a.agent]
+        const running = sessions.filter((s) => s.agent === a.agent && s.state === 'running').length
         return (
           <div key={a.agent || 'none'} className="agent-row">
             <span className="agent-row-who">
-              <AgentIcon agent={a.agent} size={20} busy={a.active > 0} />
+              <AgentIcon agent={a.agent} size={20} busy={watched ? running > 0 : a.active > 0} />
               {name}
             </span>
             <span className="hbar" {...tip.bind(`${a.active} 个进行中`, `${name} · 待办 ${a.todo} · 已暂停 ${a.paused}`)}>
@@ -327,6 +331,7 @@ function AgentsCard({ d, tip }: { d: DashboardData; tip: TipApi }) {
             </span>
             <span className="agent-row-rest muted">
               待办 {a.todo} · 暂停 {a.paused}
+              {watched && running > 0 && ` · ${running} 个会话在跑`}
             </span>
           </div>
         )

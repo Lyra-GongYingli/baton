@@ -18,6 +18,7 @@ import { copyWithFlash, useDelayedClick } from '../components/Copy'
 import { markDragging, useDndSensors } from '../components/Sortable'
 import { StatusPicker } from '../components/StatusPicker'
 import { cx } from '../util'
+import { busyOf, LiveMark, ownLive, shownState, useLiveBoard, useLiveOf } from '../live'
 import { toast } from './parts'
 
 // 月历：子任务安排在哪天做。上面是一个月的格子（滚动时一直钉在顶上），
@@ -350,6 +351,9 @@ function MonthRow({ item, onOpenTask }: { item: CalendarItem; onOpenTask: (id: s
 }
 
 function RowBody({ item }: { item: CalendarItem }) {
+  const live = useLiveOf(item.subtaskId)
+  const mine = ownLive(live, item.agent)
+  const { enabled } = useLiveBoard()
   return (
     <div className={cx('month-row', `s-${item.status}`)} style={{ '--c': item.color } as CSSProperties}>
       <span className="month-row-bar" />
@@ -363,7 +367,15 @@ function RowBody({ item }: { item: CalendarItem }) {
         </div>
       </div>
       {item.waitingFor && item.status !== 'done' && <span className="waiting">等 S{item.waitingFor}</span>}
-      {item.agent && <AgentIcon agent={item.agent} size={16} busy={item.status === 'active'} />}
+      {item.agent && (
+        <AgentIcon
+          agent={item.agent}
+          size={16}
+          busy={busyOf(enabled, item.agent, item.status, mine)}
+          live={shownState(mine, item.status)}
+        />
+      )}
+      {live && !mine && <LiveMark itemId={item.subtaskId} status={item.status} size={16} />}
       <StatusPicker value={item.status} onChange={(status) => api.updateSubtask(item.subtaskId, { status })} />
     </div>
   )

@@ -11,11 +11,13 @@ import {
   Tray
 } from 'electron'
 import { join } from 'node:path'
-import type { BatonApi, MainEvent } from '../shared/types'
+import { HOOK_AGENTS, type BatonApi, type HookAgent, type MainEvent } from '../shared/types'
 import * as db from './db'
+import * as agentHooks from './agentHooks'
 import { claudeCodeStatus, connectClaudeCode } from './claudeCode'
 import * as dock from './dock'
 import * as line from './line'
+import * as live from './live'
 import * as mcp from './mcp'
 import * as settings from './settings'
 
@@ -136,6 +138,15 @@ function afterMutation(): void {
   refreshTray()
 }
 
+/** 接入 / 断开 Claude Code、Codex 的 hooks；接入情况变了，头像动不动的规则也跟着变 */
+function setHooks(agent: HookAgent, on: boolean): { ok: boolean; message: string } {
+  const res = on
+    ? agentHooks.connectHooks(agent, mcp.HOOKS_URL, settings.getMcpToken())
+    : agentHooks.disconnectHooks(agent)
+  broadcast('live-changed')
+  return res
+}
+
 type Handlers = {
   [K in keyof BatonApi]: (
     ...args: Parameters<BatonApi[K]>
@@ -209,6 +220,11 @@ const handlers: Handlers = {
   lineInteractive: line.setLineInteractive,
   claudeCodeStatus,
   connectClaudeCode: () => connectClaudeCode(mcp.MCP_URL, settings.getMcpToken()),
+  liveBoard: () => live.liveBoard(agentHooks.hooksEnabled(mcp.HOOKS_URL, settings.getMcpToken())),
+  bindLiveSession: live.bindSession,
+  agentHooksStatus: () => HOOK_AGENTS.map((a) => agentHooks.hooksState(a, mcp.HOOKS_URL, settings.getMcpToken())),
+  connectAgentHooks: (agent) => setHooks(agent, true),
+  disconnectAgentHooks: (agent) => setHooks(agent, false),
   openMainWindow: (taskId) => {
     showMainWindow(taskId)
     if (!settings.getDock().pinned) dock.setDockOpen(false)
@@ -266,11 +282,21 @@ if (!app.requestSingleInstanceLock()) {
     if (firstRun && db.listProjects().length === 0) db.createProject({ title: '我的项目' })
     dock.createDock({ load: loadRenderer, webPreferences })
     line.createLine({ load: loadRenderer, webPreferences })
-    // 让 Claude Code 等 AI 工具能直接操控 Baton；AI 改了东西就刷新界面并提示一下
-    mcp.startMcp(settings.getMcpToken(), (summary) => {
-      afterMutation()
-      broadcast('remote-change', `AI ${summary}`)
+    // Claude Code、Codex 通过 hooks 报上来的会话：认出在做哪个任务就标成进行中，会话列表变了就刷新
+    live.startLive({
+      onLive: () => broadcast('live-changed'),
+      onData: afterMutation,
+      onNotice: (text) => broadcast('remote-change', text)
     })
+    // 让 Claude Code 等 AI 工具能直接操控 Baton；AI 改了东西就刷新界面并提示一下
+    mcp.startMcp(
+      settings.getMcpToken(),
+      (summary) => {
+        afterMutation()
+        broadcast('remote-change', `AI ${summary}`)
+      },
+      live.handleHook
+    )
     createTray()
     registerShortcuts()
     // 第一次启动时展开侧边栏打个招呼，并写下设置文件，下次就不算第一次了

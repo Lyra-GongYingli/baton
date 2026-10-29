@@ -9,7 +9,10 @@ import type {
   CalendarBoard,
   CalendarItem,
   Dashboard,
+  HookAgent,
   LineBoard,
+  LiveItem,
+  LiveState,
   ProcessBoard,
   Project,
   ProjectTree,
@@ -89,6 +92,21 @@ CREATE TABLE IF NOT EXISTS logs (
   content    TEXT NOT NULL,
   source     TEXT NOT NULL DEFAULT 'manual',
   created_at INTEGER NOT NULL
+);
+
+-- Claude Code、Codex 通过 hooks 报上来的会话：这会儿在干嘛、认出来在做哪一项。存下来，Baton 重启后还认得
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  agent      TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  item_id    TEXT NOT NULL DEFAULT '', -- 认出来的任务 / 子任务 / 子子任务；空 = 还没认出来
+  state      TEXT NOT NULL DEFAULT 'idle', -- running / waiting / idle
+  cwd        TEXT NOT NULL DEFAULT '',
+  snippet    TEXT NOT NULL DEFAULT '', -- 第一句话的开头
+  pid        INTEGER NOT NULL DEFAULT 0, -- 跑 hook 的进程
+  pid_ok     INTEGER NOT NULL DEFAULT 0, -- 连着两次报的是同一个 pid，才拿它判断会话还在不在
+  started_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (agent, session_id)
 );
 `
 
@@ -860,4 +878,100 @@ export function dashboard(): Dashboard {
     overdue,
     upcoming
   }
+}
+
+// ---------- AI 会话（hooks） ----------
+
+export interface AgentSessionRow {
+  agent: HookAgent
+  sessionId: string
+  itemId: string
+  state: LiveState
+  cwd: string
+  snippet: string
+  pid: number
+  pidOk: boolean
+  startedAt: number
+  updatedAt: number
+}
+
+function toAgentSession(r: Row): AgentSessionRow {
+  return {
+    agent: r.agent as HookAgent,
+    sessionId: r.session_id as string,
+    itemId: r.item_id as string,
+    state: r.state as LiveState,
+    cwd: r.cwd as string,
+    snippet: r.snippet as string,
+    pid: Number(r.pid),
+    pidOk: Boolean(r.pid_ok),
+    startedAt: Number(r.started_at),
+    updatedAt: Number(r.updated_at)
+  }
+}
+
+export function listAgentSessions(): AgentSessionRow[] {
+  return (db.prepare('SELECT * FROM agent_sessions ORDER BY started_at').all() as Row[]).map(toAgentSession)
+}
+
+export function getAgentSession(agent: HookAgent, sessionId: string): AgentSessionRow | null {
+  const r = db.prepare('SELECT * FROM agent_sessions WHERE agent = ? AND session_id = ?').get(agent, sessionId) as Row | undefined
+  return r ? toAgentSession(r) : null
+}
+
+export function saveAgentSession(s: AgentSessionRow): void {
+  db.prepare(
+    `INSERT INTO agent_sessions (agent, session_id, item_id, state, cwd, snippet, pid, pid_ok, started_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (agent, session_id) DO UPDATE SET
+       item_id = excluded.item_id, state = excluded.state, cwd = excluded.cwd, snippet = excluded.snippet,
+       pid = excluded.pid, pid_ok = excluded.pid_ok, updated_at = excluded.updated_at`
+  ).run(s.agent, s.sessionId, s.itemId, s.state, s.cwd, s.snippet, s.pid, s.pidOk ? 1 : 0, s.startedAt, s.updatedAt)
+}
+
+/** 删掉一个会话；真删了返回 true */
+export function deleteAgentSession(agent: HookAgent, sessionId: string): boolean {
+  return Number(db.prepare('DELETE FROM agent_sessions WHERE agent = ? AND session_id = ?').run(agent, sessionId).changes) > 0
+}
+
+/** 所有填了提示词的子任务、子子任务和任务，占位符已替换。子任务排在前面：一样的话先算更具体的那个 */
+export function promptCandidates(): { id: string; text: string }[] {
+  const tasks = new Map((db.prepare('SELECT * FROM tasks').all() as Row[]).map((r) => [r.id as string, toTask(r)]))
+  const out: { id: string; text: string }[] = []
+  for (const r of db.prepare("SELECT id, task_id, prompt FROM subtasks WHERE prompt != ''").all() as Row[]) {
+    const t = tasks.get(r.task_id as string)
+    if (t) out.push({ id: r.id as string, text: expandPrompt(String(r.prompt), t) })
+  }
+  for (const t of tasks.values()) if (t.prompt) out.push({ id: t.id, text: expandPrompt(t.prompt, t) })
+  return out
+}
+
+/** 一项（任务、子任务或子子任务）现在的状态和执行者，判断要不要改成进行中；找不到是 null */
+export function itemState(id: string): { kind: 'task' | 'subtask'; status: Status; agent: Assignee; parentId: string } | null {
+  const s = db.prepare('SELECT status, agent, parent_id FROM subtasks WHERE id = ?').get(id) as Row | undefined
+  if (s) return { kind: 'subtask', status: s.status as Status, agent: s.agent as Assignee, parentId: s.parent_id as string }
+  const t = db.prepare('SELECT status FROM tasks WHERE id = ?').get(id) as Row | undefined
+  return t ? { kind: 'task', status: t.status as Status, agent: '', parentId: '' } : null
+}
+
+/** 会话列表里怎么写这一项：编号、标题、属于哪个任务；删掉了是 null */
+export function liveItem(id: string): LiveItem | null {
+  const sub = db.prepare('SELECT task_id, parent_id, ref, title, status FROM subtasks WHERE id = ?').get(id) as Row | undefined
+  const taskId = sub ? (sub.task_id as string) : id
+  const t = db
+    .prepare('SELECT t.title, t.status, p.color FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?')
+    .get(taskId) as Row | undefined
+  if (!t) return null
+  const base = { id, taskId, taskTitle: t.title as string, color: (t.color as string) || '#9CA3AF' }
+  if (!sub) return { ...base, kind: 'task', label: '', title: t.title as string, status: t.status as Status }
+  let label = `S${sub.ref}`
+  if (sub.parent_id) {
+    // 子子任务的编号是在上级子任务里的顺序，和界面上一样现算
+    const parent = db.prepare('SELECT ref FROM subtasks WHERE id = ?').get(sub.parent_id) as Row | undefined
+    const siblings = (
+      db.prepare('SELECT id FROM subtasks WHERE parent_id = ? ORDER BY position, created_at').all(sub.parent_id) as Row[]
+    ).map((r) => r.id)
+    label = `S${parent ? Number(parent.ref) : '?'}.${siblings.indexOf(id) + 1}`
+  }
+  return { ...base, kind: 'subtask', label, title: sub.title as string, status: sub.status as Status }
 }

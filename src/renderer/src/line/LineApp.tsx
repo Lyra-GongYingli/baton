@@ -8,17 +8,28 @@ import {
   type CollisionDetection
 } from '@dnd-kit/core'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { AGENT_BY_ID } from '../../../shared/agents'
 import { dayLabel } from '../../../shared/dates'
 import { expandPrompt } from '../../../shared/prompt'
-import { STATUS_LABEL, type LineState, type Status, type TaskDetail } from '../../../shared/types'
+import {
+  LIVE_LABEL,
+  STATUS_LABEL,
+  type LineBoard,
+  type LineState,
+  type LiveSession,
+  type Status,
+  type TaskDetail
+} from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
 import { cardPrompt } from '../board/TaskCard'
 import { TaskBody } from '../board/TaskBody'
+import { AgentIcon } from '../components/AgentIcon'
 import { CopyFlash } from '../components/Copy'
 import { draggingOrJustDragged, isDragging, markDragging, useDndSensors, type DragOut } from '../components/Sortable'
 import { openStatusMenu, StatusMenuHost } from '../components/StatusMenu'
 import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
 import { Icon, Toast, Track } from '../dock/parts'
+import { useLiveBoard } from '../live'
 import { cx } from '../util'
 
 // 晾衣绳：屏幕顶上一根绳子，主角是进行中的任务——每个任务一张卡片。
@@ -55,6 +66,8 @@ type Flash = { key: string; text: string; id: number }
 type Dragged = { taskId: string; title: string; color: string; dragOut?: DragOut }
 /** 便签上的一行 */
 type NoteEntry = { id: string; title: string; color: string; projectTitle: string; status: Status; from?: string; prompt: string }
+/** 「归到…」下拉框里的一组：一个没做完的任务，和它下面没做完的子任务、子子任务 */
+type BindGroup = { taskId: string; taskTitle: string; items: { id: string; label: string }[] }
 
 // 窗口的空白处要让点击穿过去，鼠标进到卡片上时才接住
 let interactive = false
@@ -204,7 +217,16 @@ export function LineApp() {
   const hangers: { key: string; node: ReactNode }[] = [
     {
       key: 'note',
-      node: <Note noteOf={noteOf} dragging={Boolean(dragged)} pinned={pinned} onOpen={openTask} onStatus={setTaskStatus} />
+      node: (
+        <Note
+          noteOf={noteOf}
+          groups={bindGroups(board)}
+          dragging={Boolean(dragged)}
+          pinned={pinned}
+          onOpen={openTask}
+          onStatus={setTaskStatus}
+        />
+      )
     },
     ...(cards.length
       ? cards.map((d) => ({
@@ -317,12 +339,14 @@ function Clip() {
 /** 最左边的便签：待办 / 已暂停 / 今天完成 的任务。每一栏都能把任务卡拖进来 */
 function Note({
   noteOf,
+  groups,
   dragging,
   pinned,
   onOpen,
   onStatus
 }: {
   noteOf: (s: Status) => NoteEntry[]
+  groups: BindGroup[]
   dragging: boolean
   pinned: boolean
   onOpen: (taskId: string) => void
@@ -347,6 +371,7 @@ function Note({
       </div>
       {/* 任务多了便签不会无限变长：这里面自己滚动，日期留在上面 */}
       <div className="line-note-body">
+        <LiveSection groups={groups} onOpen={onOpen} />
         {NOTE_SECTIONS.map(({ status, name }) => (
           <NoteSection
             key={status}
@@ -441,6 +466,108 @@ function NoteItem({
       <i />
       <span className="line-note-title">{entry.title}</span>
       {entry.from && entry.status !== 'done' && <span className="line-note-date-tag">{dayLabel(entry.from)}</span>}
+    </div>
+  )
+}
+
+/** 没做完的任务（进行中、待办、已暂停），各带着没做完的子任务、子子任务：给没认出来的会话选一个归过去 */
+function bindGroups(board: LineBoard): BindGroup[] {
+  type Row = { id: string; ref: number; title: string; status: Status; children: { id: string; title: string; status: Status }[] }
+  const group = (taskId: string, taskTitle: string, subs: Row[]): BindGroup => ({
+    taskId,
+    taskTitle,
+    items: [
+      { id: taskId, label: '整个任务' },
+      ...subs.flatMap((s) => [
+        ...(s.status === 'done' ? [] : [{ id: s.id, label: `S${s.ref} ${s.title}` }]),
+        ...s.children.flatMap((c, i) => (c.status === 'done' ? [] : [{ id: c.id, label: `S${s.ref}.${i + 1} ${c.title}` }]))
+      ])
+    ]
+  })
+  return [
+    ...board.active.map((d) => group(d.task.id, d.task.title, d.subtasks)),
+    ...[...board.todo, ...board.paused].map((t) => group(t.id, t.title, t.subtasks))
+  ]
+}
+
+/**
+ * 便签最上面：Claude Code、Codex 的会话（接入了自动检测才有）。
+ * 正在跑、等你批准的都列出来；跑完一轮的，只列认出来、还没做完的（等你看）。
+ * 认出来的写着在做哪一项，点一下打开、右击改它的状态或解绑；没认出来的可以在下拉框里归到某个任务
+ */
+function LiveSection({ groups, onOpen }: { groups: BindGroup[]; onOpen: (taskId: string) => void }) {
+  const { sessions } = useLiveBoard()
+  const shown = sessions.filter((s) => s.state !== 'idle' || (s.item && s.item.status !== 'done'))
+  if (shown.length === 0) return null
+  return (
+    <section className="line-note-section line-live">
+      <div className="line-note-head static">
+        AI 会话
+        <b>{shown.length}</b>
+      </div>
+      {shown.map((s) => (
+        <LiveRow key={`${s.agent}:${s.sessionId}`} s={s} groups={groups} onOpen={onOpen} />
+      ))}
+    </section>
+  )
+}
+
+function LiveRow({ s, groups, onOpen }: { s: LiveSession; groups: BindGroup[]; onOpen: (taskId: string) => void }) {
+  const { item } = s
+  const who = `${AGENT_BY_ID[s.agent].name} ${LIVE_LABEL[s.state]}`
+  const where = s.folder ? `${s.folder} · ` : ''
+  return (
+    <div className="line-live-row">
+      <div
+        className={cx('line-live-item', item ? 'known' : 'unknown')}
+        style={{ '--c': item?.color ?? 'transparent' } as CSSProperties}
+        title={
+          item
+            ? `${who}\n${item.taskTitle}${item.label ? ` / ${item.label} ${item.title}` : ''}\n点一下打开 · 右击改状态或解绑`
+            : `${who}\n${where}${s.snippet}\n还没认出是哪个任务，可以在下面归到一个任务`
+        }
+        onClick={item ? () => onOpen(item.taskId) : undefined}
+        onContextMenu={
+          item
+            ? (e) =>
+                openStatusMenu(e, {
+                  title: item.label ? `${item.label} ${item.title}` : item.title,
+                  value: item.status,
+                  onChange: (status) =>
+                    item.kind === 'task' ? api.updateTask(item.id, { status }) : api.updateSubtask(item.id, { status }),
+                  actions: [
+                    { label: '在侧边栏打开', onClick: () => onOpen(item.taskId) },
+                    { label: '不算这一项（解绑）', onClick: () => api.bindLiveSession(s.agent, s.sessionId, '') }
+                  ]
+                })
+            : undefined
+        }
+      >
+        <AgentIcon agent={s.agent} size={14} busy={s.state === 'running'} live={s.state} />
+        <span className="line-note-title">
+          {item ? `${item.label ? `${item.label} ` : ''}${item.title}` : `${where}${s.snippet || '新会话'}`}
+        </span>
+      </div>
+      {!item && (
+        <select
+          className="line-live-bind"
+          value=""
+          onChange={(e) => {
+            if (e.target.value) api.bindLiveSession(s.agent, s.sessionId, e.target.value)
+          }}
+        >
+          <option value="">归到…</option>
+          {groups.map((g) => (
+            <optgroup key={g.taskId} label={g.taskTitle}>
+              {g.items.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      )}
     </div>
   )
 }

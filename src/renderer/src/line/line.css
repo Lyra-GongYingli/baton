@@ -390,6 +390,45 @@ body.route-line {
   text-decoration: line-through;
   text-decoration-color: color-mix(in srgb, var(--note-ink) 45%, transparent);
 }
+/* 便签最上面的 AI 会话：标题不能折，一行一个会话；没认出来的下面跟一个「归到…」 */
+.line-note-head.static {
+  cursor: default;
+}
+.line-note-head.static:hover {
+  background: none;
+}
+.line-live-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.line-live-item.known {
+  cursor: pointer;
+  box-shadow: inset 2.5px 0 0 var(--c);
+}
+.line-live-item.known:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+.line-live-item.unknown .line-note-title {
+  opacity: 0.75;
+}
+.line-live-bind {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 1px 0 4px 20px;
+  padding: 1px 4px;
+  border: 1px solid color-mix(in srgb, var(--note-ink) 25%, transparent);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.55);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+}
 .line-note-hint {
   margin: 1px 0 0 13px;
   font-size: 10.5px;

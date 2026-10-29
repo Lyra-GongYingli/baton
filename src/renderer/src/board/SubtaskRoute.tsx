@@ -16,6 +16,7 @@ import { markDragging, useDndSensors, type DragHandle } from '../components/Sort
 import { openStatusMenu } from '../components/StatusMenu'
 import { StatusPicker } from '../components/StatusPicker'
 import { toast, useDropTarget } from '../dock/parts'
+import { busyOf, LiveMark, ownLive, shownState, useLiveBoard, useLiveOf } from '../live'
 import { cx, titleFromText } from '../util'
 
 // 子任务 list：子任务和它下面的子子任务排成一棵两层的树。
@@ -265,7 +266,10 @@ function Stop({
   const prev = previousOf(s, siblings)
   const chained = s.chained && !first
   const waiting = prev && prev.status !== 'done'
-  const busy = s.status === 'active'
+  const live = useLiveOf(s.id)
+  const mine = ownLive(live, s.agent)
+  const { enabled } = useLiveBoard()
+  const busy = busyOf(enabled, s.agent, s.status, mine)
   const next = nextStatus(s.status)
 
   // 把文字扔到这个子任务上 = 加一个子子任务，文字就是它的提示词
@@ -325,7 +329,14 @@ function Stop({
             <InlineEdit value={s.title} placeholder="子任务名" onSave={(title) => api.updateSubtask(s.id, { title })} />
             {/* 状态是主角；谁在做只是旁边一个小头像 */}
             <span className="stop-tags">
-              <AgentPicker value={s.agent} size={16} busy={busy} onChange={(agent) => api.assignSubtask(s.id, agent)} />
+              <AgentPicker
+                value={s.agent}
+                size={16}
+                busy={busy}
+                live={shownState(mine, s.status)}
+                onChange={(agent) => api.assignSubtask(s.id, agent)}
+              />
+              {live && !mine && <LiveMark itemId={s.id} status={s.status} size={16} />}
               <StatusPicker value={s.status} onChange={(status) => api.updateSubtask(s.id, { status })} />
             </span>
           </div>
@@ -423,6 +434,7 @@ function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detai
           />
         )}
       </div>
+      <LiveMark itemId={c.id} status={c.status} size={14} />
       <StatusPicker small value={c.status} onChange={(status) => api.updateSubtask(c.id, { status })} />
       <DeleteButton title="删除这个子子任务" onConfirm={() => api.deleteSubtask(c.id)} />
     </div>
