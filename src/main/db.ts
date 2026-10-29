@@ -677,21 +677,41 @@ export function subtaskInfo(id: string): { taskId: string; parentId: string; tit
   return r ? { taskId: r.task_id as string, parentId: r.parent_id as string, title: r.title as string } : null
 }
 
-/** 把一个子任务（连同它的子子任务）挪到另一个任务的最后，两边的 S 编号、状态都重新对齐 */
-export function moveSubtask(id: string, taskId: string): void {
-  const info = subtaskInfo(id)
-  if (!info || info.parentId || info.taskId === taskId) return
+/**
+ * 把一个子任务 / 子子任务（连同它的子子任务）挪到另一个任务，排在最后：
+ * parentId 是那个任务里的一个子任务时，当它的子子任务；空的话当子任务。带着子子任务的只能当子任务（最多两层）。
+ * 和拖动排序一样：变成子子任务就是简单的清单项（不接力、不分人、不排日子），提出来当子任务没排日子的排在今天。
+ * 两边的 S 编号、状态都重新对齐
+ */
+export function moveSubtask(id: string, taskId: string, parentId = ''): void {
+  const row = db.prepare('SELECT task_id, parent_id, scheduled_on FROM subtasks WHERE id = ?').get(id) as Row | undefined
+  if (!row || !db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(taskId)) return
+  const hasChildren = Boolean(db.prepare('SELECT 1 FROM subtasks WHERE parent_id = ?').get(id))
+  const target = parentId ? subtaskInfo(parentId) : null
+  const parent = target && target.taskId === taskId && !target.parentId && parentId !== id && !hasChildren ? parentId : ''
+  const fromTask = row.task_id as string
+  const fromParent = row.parent_id as string
+  if (fromTask === taskId && fromParent === parent) return
   const max = db
-    .prepare("SELECT COALESCE(MAX(position), 0) AS p FROM subtasks WHERE task_id = ? AND parent_id = ''")
-    .get(taskId) as Row
-  db.prepare('UPDATE subtasks SET task_id = ?, position = ?, chained = 0, updated_at = ? WHERE id = ?').run(
-    taskId,
-    Number(max.p) + 1,
-    Date.now(),
-    id
-  )
+    .prepare('SELECT COALESCE(MAX(position), 0) AS p FROM subtasks WHERE task_id = ? AND parent_id = ?')
+    .get(taskId, parent) as Row
+  const cols: Record<string, SQLInputValue> = {
+    task_id: taskId,
+    parent_id: parent,
+    position: Number(max.p) + 1,
+    chained: 0,
+    updated_at: Date.now()
+  }
+  if (parent) {
+    cols.agent = ''
+    cols.scheduled_on = ''
+  } else if (!row.scheduled_on) {
+    cols.scheduled_on = todayStr()
+  }
+  update('subtasks', id, cols)
   db.prepare('UPDATE subtasks SET task_id = ? WHERE parent_id = ?').run(taskId, id)
-  for (const t of [info.taskId, taskId]) {
+  for (const p of [fromParent, parent]) if (p) syncSubtaskStatus(p)
+  for (const t of new Set([fromTask, taskId])) {
     renumberSubtasks(t)
     touchTask(t)
     syncTaskStatus(t)

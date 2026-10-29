@@ -139,6 +139,11 @@ body.route-line {
 .line-card.placeholder {
   opacity: 0.35;
 }
+/* 别的卡片上的子任务拖过来：这张卡片描一圈虚线（停在哪个子任务上，那一行也会亮） */
+.line-card.cross-over {
+  outline: 2.5px dashed var(--c);
+  outline-offset: 4px;
+}
 
 .line-task-head {
   display: flex;
@@ -389,17 +394,6 @@ body.route-line {
 .line-note-section.t-done .line-note-item {
   text-decoration: line-through;
   text-decoration-color: color-mix(in srgb, var(--note-ink) 45%, transparent);
-}
-/* 便签最上面的 AI 会话：标题不能折，一行是一个会话在做的那一项，和下面的任务一样拖；左边一条是项目的颜色，前面是 AI 的头像 */
-.line-note-head.static {
-  cursor: default;
-}
-.line-note-head.static:hover {
-  background: none;
-}
-.line-note-item.line-live-item {
-  padding-left: 6px;
-  box-shadow: inset 2.5px 0 0 var(--c);
 }
 .line-note-hint {
   margin: 1px 0 0 13px;

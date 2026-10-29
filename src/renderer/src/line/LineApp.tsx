@@ -8,28 +8,18 @@ import {
   type CollisionDetection
 } from '@dnd-kit/core'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { AGENT_BY_ID } from '../../../shared/agents'
 import { dayLabel } from '../../../shared/dates'
 import { expandPrompt } from '../../../shared/prompt'
-import {
-  LIVE_LABEL,
-  STATUS_LABEL,
-  type LineState,
-  type LiveItem,
-  type LiveSession,
-  type Status,
-  type TaskDetail
-} from '../../../shared/types'
+import { STATUS_LABEL, type LineState, type Status, type TaskDetail } from '../../../shared/types'
 import { api, onMainEvent, useData } from '../api'
 import { cardPrompt } from '../board/TaskCard'
 import { TaskBody } from '../board/TaskBody'
-import { AgentIcon } from '../components/AgentIcon'
 import { CopyFlash } from '../components/Copy'
+import { useCrossTarget } from '../components/crossDrop'
 import { draggingOrJustDragged, isDragging, markDragging, useDndSensors, type DragOut } from '../components/Sortable'
 import { openStatusMenu, StatusMenuHost } from '../components/StatusMenu'
 import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
 import { Icon, Toast, Track } from '../dock/parts'
-import { useLiveBoard } from '../live'
 import { cx } from '../util'
 
 // 晾衣绳：屏幕顶上一根绳子，主角是进行中的任务——每个任务一张卡片。
@@ -62,11 +52,8 @@ const NOTE_SECTIONS: { status: Status; name: string }[] = [
 
 type Phase = 'hidden' | 'in' | 'out'
 type Flash = { key: string; text: string; id: number }
-/**
- * 被拖动的东西：一张任务卡，或便签上的一项（AI 会话那一栏里也可能是子任务、子子任务，subtaskId 就是它）。
- * 带着提示词的还能拖出去丢进别的软件的输入框
- */
-type Dragged = { taskId: string; subtaskId?: string; title: string; color: string; dragOut?: DragOut }
+/** 被拖动的东西：一张任务卡，或便签上的一个任务。带着提示词的还能拖出去丢进别的软件的输入框 */
+type Dragged = { taskId: string; title: string; color: string; dragOut?: DragOut }
 /** 便签上的一行 */
 type NoteEntry = { id: string; title: string; color: string; projectTitle: string; status: Status; from?: string; prompt: string }
 
@@ -215,12 +202,6 @@ export function LineApp() {
     setFlash({ key: 'note', text: `「${entry.title}」→ ${STATUS_LABEL[status]}`, id: Date.now() })
   }
 
-  /** 子任务、子子任务换状态（AI 会话在做的那一项）：任务跟着子任务的进度走 */
-  const setSubtaskStatus = (subtaskId: string, title: string, status: Status): void => {
-    api.updateSubtask(subtaskId, { status })
-    setFlash({ key: 'note', text: `「${title}」→ ${STATUS_LABEL[status]}`, id: Date.now() })
-  }
-
   const hangers: { key: string; node: ReactNode }[] = [
     {
       key: 'note',
@@ -231,7 +212,6 @@ export function LineApp() {
           pinned={pinned}
           onOpen={openTask}
           onStatus={setTaskStatus}
-          onSubtaskStatus={setSubtaskStatus}
         />
       )
     },
@@ -266,12 +246,10 @@ export function LineApp() {
           markDragging(false)
           setDragged(null)
           if (!over) return
-          const { taskId, subtaskId, title } = active.data.current as Dragged
+          const { taskId } = active.data.current as Dragged
           const target = String(over.id)
-          const status = target.startsWith(SECTION) ? (target.slice(SECTION.length) as Status) : target === ACTIVE_ZONE ? 'active' : null
-          if (!status) return
-          if (subtaskId) setSubtaskStatus(subtaskId, title, status)
-          else setTaskStatus(taskId, status)
+          if (target.startsWith(SECTION)) setTaskStatus(taskId, target.slice(SECTION.length) as Status)
+          else if (target === ACTIVE_ZONE) setTaskStatus(taskId, 'active')
         }}
       >
         <ActiveZone />
@@ -351,15 +329,13 @@ function Note({
   dragging,
   pinned,
   onOpen,
-  onStatus,
-  onSubtaskStatus
+  onStatus
 }: {
   noteOf: (s: Status) => NoteEntry[]
   dragging: boolean
   pinned: boolean
   onOpen: (taskId: string) => void
   onStatus: (taskId: string, status: Status) => void
-  onSubtaskStatus: (subtaskId: string, title: string, status: Status) => void
 }) {
   const today = new Date()
   const [folded, setFolded] = useState<Status[]>(loadFolded)
@@ -380,7 +356,6 @@ function Note({
       </div>
       {/* 任务多了便签不会无限变长：这里面自己滚动，日期留在上面 */}
       <div className="line-note-body">
-        <LiveSection onOpen={onOpen} onStatus={onStatus} onSubtaskStatus={onSubtaskStatus} />
         {NOTE_SECTIONS.map(({ status, name }) => (
           <NoteSection
             key={status}
@@ -480,97 +455,6 @@ function NoteItem({
 }
 
 /**
- * 便签最上面：Claude Code、Codex 的会话在做的那一项（接入了自动检测才有）。
- * 正在跑、等你批准的都列出来；跑完一轮的，只列那一项还没做完的（等你看）。
- * 每一行就是那个任务 / 子任务 / 子子任务，和下面的任务一样用：点一下打开，右击改状态，
- * 拖到便签的某一栏改状态、拖到绳子上开始做，填了提示词的拖到 AI 的输入框粘贴
- */
-function LiveSection({
-  onOpen,
-  onStatus,
-  onSubtaskStatus
-}: {
-  onOpen: (taskId: string) => void
-  onStatus: (taskId: string, status: Status) => void
-  onSubtaskStatus: (subtaskId: string, title: string, status: Status) => void
-}) {
-  const { sessions } = useLiveBoard()
-  const shown = sessions.filter(
-    (s): s is LiveSession & { item: LiveItem } => s.item !== null && (s.state !== 'idle' || s.item.status !== 'done')
-  )
-  if (shown.length === 0) return null
-  return (
-    <section className="line-note-section line-live">
-      <div className="line-note-head static">
-        AI 会话
-        <b>{shown.length}</b>
-      </div>
-      {shown.map((s) => (
-        <LiveRow
-          key={`${s.agent}:${s.sessionId}`}
-          s={s}
-          onOpen={onOpen}
-          onStatus={(status) => (s.item.kind === 'task' ? onStatus(s.item.id, status) : onSubtaskStatus(s.item.id, nameOf(s.item), status))}
-        />
-      ))}
-    </section>
-  )
-}
-
-/** S2 写接口；整个任务就是任务名 */
-function nameOf(item: LiveItem): string {
-  return item.label ? `${item.label} ${item.title}` : item.title
-}
-
-function LiveRow({
-  s,
-  onOpen,
-  onStatus
-}: {
-  s: LiveSession & { item: LiveItem }
-  onOpen: (taskId: string) => void
-  onStatus: (status: Status) => void
-}) {
-  const { item } = s
-  const name = nameOf(item)
-  const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({
-    id: `live:${s.agent}:${s.sessionId}`,
-    data: {
-      taskId: item.taskId,
-      subtaskId: item.kind === 'subtask' ? item.id : undefined,
-      title: name,
-      color: item.color,
-      dragOut: { text: item.prompt, slip: { title: name, color: item.color } }
-    } satisfies Dragged
-  })
-  return (
-    <div
-      ref={setNodeRef}
-      {...attributes}
-      {...listeners}
-      draggable={Boolean(item.prompt) || undefined}
-      className={cx('line-note-item', 'line-live-item', dragging && 'placeholder')}
-      style={{ '--c': item.color } as CSSProperties}
-      title={`${AGENT_BY_ID[s.agent].name} ${LIVE_LABEL[s.state]}\n${item.taskTitle}${item.label ? ` / ${name}` : ''}\n点一下打开 · 拖到便签的一栏或绳子上改状态 · 右击改状态${item.prompt ? ' · 拖到 AI 的输入框粘贴提示词' : ''}`}
-      onClick={() => {
-        if (!isDragging()) onOpen(item.taskId)
-      }}
-      onContextMenu={(e) =>
-        openStatusMenu(e, {
-          title: name,
-          value: item.status,
-          onChange: onStatus,
-          actions: [{ label: '在侧边栏打开', onClick: () => onOpen(item.taskId) }]
-        })
-      }
-    >
-      <AgentIcon agent={s.agent} size={14} busy={s.state === 'running'} live={s.state} />
-      <span className="line-note-title">{name}</span>
-    </div>
-  )
-}
-
-/**
  * 一个进行中的任务。顶上一条：项目、在侧边栏打开、状态（按住这一条可以拖到便签上）；
  * 下面是进度条和侧边栏同款的任务正文（紧凑版），内容多了在卡片里滚动。
  */
@@ -585,6 +469,8 @@ function TaskCard({
 }) {
   const { task, project, subtasks } = detail
   const prompt = detailPrompt(detail)
+  // 别的卡片上的子任务拖过来，停在这张卡片上
+  const crossOver = useCrossTarget()?.taskId === task.id
   const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({
     id: `task:${task.id}`,
     data: {
@@ -598,8 +484,11 @@ function TaskCard({
   return (
     <div
       ref={setNodeRef}
-      className={cx('line-card', 'line-task', 'line-hit', dragging && 'placeholder')}
+      className={cx('line-card', 'line-task', 'line-hit', dragging && 'placeholder', crossOver && 'cross-over')}
       style={{ '--c': project.color } as CSSProperties}
+      // 子任务、子子任务可以从别的卡片拖进来（见 crossDrop）
+      data-drop-task={task.id}
+      data-drop-title={task.title}
       // 右击卡片空白处 / 标题：改整个任务的状态；右击子任务那一行改子任务（那边自己处理）
       onContextMenu={(e) =>
         openStatusMenu(e, {

@@ -2346,6 +2346,10 @@ button.child-check:hover {
 .tree-indicator.nested {
   margin-left: 40px;
 }
+/* 拖到别的任务卡片上了：这边先不显示要插在哪 */
+.tree-indicator.away {
+  visibility: hidden;
+}
 .tree-preview {
   display: inline-flex;
   align-items: center;
@@ -2364,10 +2368,17 @@ button.child-check:hover {
   cursor: grabbing;
 }
 .tree-preview .muted {
+  flex: none;
   font-weight: 500;
   font-size: 11px;
 }
+.tree-preview-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tree-preview-hint {
+  flex: none;
   margin-left: 4px;
   font-size: 11px;
   font-weight: 600;

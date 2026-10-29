@@ -204,6 +204,7 @@ const handlers: Handlers = {
   updateSubtask: db.updateSubtask,
   arrangeSubtasks: db.arrangeSubtasks,
   deleteSubtask: db.deleteSubtask,
+  moveSubtask: db.moveSubtask,
 
   processBoard: db.processBoard,
   calendar: db.calendar,
@@ -273,6 +274,7 @@ const MUTATIONS = new Set<keyof BatonApi>([
   'updateSubtask',
   'arrangeSubtasks',
   'deleteSubtask',
+  'moveSubtask',
   'assignSubtask'
 ])
 

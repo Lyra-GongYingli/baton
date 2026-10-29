@@ -1,7 +1,7 @@
 import { DndContext, DragOverlay, MeasuringStrategy, closestCenter } from '@dnd-kit/core'
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { nextStatus } from '../../../shared/agents'
 import { expandPrompt, previousOf, titleFromText } from '../../../shared/prompt'
@@ -10,6 +10,7 @@ import { api } from '../api'
 import { AgentIcon } from '../components/AgentIcon'
 import { AgentPicker } from '../components/AgentPicker'
 import { Copyable } from '../components/Copy'
+import { crossTarget, findCrossTarget, setCrossTarget, useCrossTarget, type CrossTarget } from '../components/crossDrop'
 import { DateChip } from '../components/DatePicker'
 import { DeleteButton } from '../components/DeleteButton'
 import { InlineEdit, renderPrompt } from '../components/InlineEdit'
@@ -27,6 +28,7 @@ import { cx } from '../util'
 // 任何一行都能按住拖：上下拖换位置，拖的时候往右挪 = 变成上面那个子任务的子子任务，往左挪 = 提出来变成子任务。
 // 带着子子任务的子任务被拖动时，子子任务跟着走；它不能再被放进别的子任务里（最多两层）。
 // 做完的子任务（连同它的子子任务）收进最下面的「已完成」，一行一个，list 里只排没做完的。
+// 晾衣绳上还能拖到别的任务卡片：停在那张卡片的某个子任务上 = 当它的子子任务，停在卡片别处 = 当子任务排在最后。
 
 /** 往右拖多少像素算缩进一层 */
 const INDENT = 28
@@ -109,6 +111,9 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
   const [overId, setOverId] = useState<string | null>(null)
   const [offsetX, setOffsetX] = useState(0)
   const [adding, setAdding] = useState<string | null>(null)
+  // 按下时鼠标在哪：加上挪了多少，就是现在在哪，用来找有没有拖到别的任务卡片上
+  const start = useRef({ x: 0, y: 0 })
+  const cross = useCrossTarget()
 
   const byId = new Map<string, Subtask>(subtasks.flatMap((s) => [[s.id, s] as const, ...s.children.map((c) => [c.id, c] as const)]))
   const rows: Row[] = withParents(slots).flatMap((s, i, all) => {
@@ -131,6 +136,13 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
     setActiveId(null)
     setOverId(null)
     setOffsetX(0)
+    setCrossTarget(null)
+  }
+
+  /** 拖到别的任务卡片上松手：挪过去。带着子子任务的只能当子任务 */
+  const moveAcross = (id: string, target: CrossTarget): void => {
+    api.moveSubtask(id, target.taskId, target.parentId)
+    toast(`✓ 挪到「${target.title}」${target.parentId ? `的 ${target.label} 下面` : ''}`)
   }
 
   const drop = (overRowId: string | null): void => {
@@ -160,15 +172,24 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
         sensors={sensors}
         collisionDetection={closestCenter}
         measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
-        onDragStart={({ active: a }) => {
+        onDragStart={({ active: a, activatorEvent }) => {
           markDragging(true)
           setActiveId(String(a.id))
           setOverId(String(a.id))
+          const e = activatorEvent as PointerEvent | null
+          start.current = { x: e?.clientX ?? 0, y: e?.clientY ?? 0 }
         }}
-        onDragMove={({ delta }) => setOffsetX(delta.x)}
+        onDragMove={({ active: a, delta }) => {
+          setOffsetX(delta.x)
+          const target = findCrossTarget(start.current.x + delta.x, start.current.y + delta.y, task.id)
+          const hasChildren = rows.some((r) => r.parentId === String(a.id))
+          setCrossTarget(target && hasChildren ? { ...target, parentId: '', label: '' } : target)
+        }}
         onDragOver={({ over }) => setOverId(over ? String(over.id) : null)}
-        onDragEnd={({ over }) => {
-          drop(over ? String(over.id) : null)
+        onDragEnd={({ active: a, over }) => {
+          const target = crossTarget()
+          if (target) moveAcross(String(a.id), target)
+          else drop(over ? String(over.id) : null)
           reset()
         }}
         onDragCancel={reset}
@@ -190,6 +211,7 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
                     current={r.id === currentId}
                     compact={compact}
                     label={parent ? `S${parent.ref}.${siblings.findIndex((x) => x.id === r.id) + 1}` : ''}
+                    away={Boolean(activeId && cross)}
                     onAddChild={() => setAdding(r.id)}
                   />
                   {adding === groupParent && isLastOfGroup && r.id !== activeId && (
@@ -206,9 +228,16 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
             {active && (
               <div className="tree-preview" style={{ '--c': detail.project.color } as CSSProperties}>
                 <span className="ref">{active.depth === 0 ? `S${active.sub.ref}` : '·'}</span>
-                {active.sub.title}
+                {/* 标题太长就截掉，后面「挪到哪」的提示要一直看得见 */}
+                <span className="tree-preview-title">{active.sub.title}</span>
                 {active.hasChildren && <span className="muted">＋{active.sub.children.length} 个子子任务</span>}
-                <span className="tree-preview-hint">{projected === 1 ? '→ 放进上面的子任务' : '→ 作为子任务'}</span>
+                <span className="tree-preview-hint">
+                  {cross
+                    ? `→ 挪到「${cross.title}」${cross.parentId ? `的 ${cross.label} 下面` : ''}`
+                    : projected === 1
+                      ? '→ 放进上面的子任务'
+                      : '→ 作为子任务'}
+                </span>
               </div>
             )}
           </DragOverlay>,
@@ -229,6 +258,7 @@ function TreeRow({
   current,
   compact,
   label,
+  away,
   onAddChild
 }: {
   row: Row
@@ -238,6 +268,8 @@ function TreeRow({
   current: boolean
   compact?: boolean
   label: string
+  /** 正拖到别的任务卡片上：这边的插入线先藏起来 */
+  away: boolean
   onAddChild: () => void
 }) {
   const { setNodeRef, transform, transition, attributes, listeners, isDragging } = useSortable({ id: row.id })
@@ -250,9 +282,9 @@ function TreeRow({
   }
   // 被拖着的那一行变成一条插入线，缩进表示松手后落在哪一层
   if (isDragging) {
-    return <div ref={setNodeRef} style={drag.style} className={cx('tree-indicator', depth === 1 && 'nested')} />
+    return <div ref={setNodeRef} style={drag.style} className={cx('tree-indicator', depth === 1 && 'nested', away && 'away')} />
   }
-  if (row.depth === 1) return <ChildRow c={row.sub} label={label} detail={detail} drag={drag} />
+  if (row.depth === 1) return <ChildRow c={row.sub} label={label} parentLabel={label.split('.')[0]} detail={detail} drag={drag} />
   const index = topLevel.findIndex((s) => s.id === row.id)
   // 前后紧挨着的那个做完、收进「已完成」了：这一头没有能连上的，不画接力线
   const prev = topLevel[index - 1]
@@ -303,6 +335,7 @@ function Stop({
   const { enabled } = useLiveBoard()
   const busy = busyOf(enabled, s.agent, s.status, mine)
   const next = nextStatus(s.status)
+  const crossOver = useCrossTarget()?.parentId === s.id
 
   // 把文字扔到这个子任务上 = 加一个子子任务，文字就是它的提示词
   const drop = useDropTarget(async (text) => {
@@ -319,8 +352,10 @@ function Stop({
         `s-${s.status}`,
         chained || startsChain ? 'chained' : 'solo',
         current && 'current',
-        drop.over && 'drop-over'
+        (drop.over || crossOver) && 'drop-over'
       )}
+      data-drop-sub={s.id}
+      data-drop-label={`S${s.ref}`}
       {...drop.props}
     >
       {!first && (
@@ -412,7 +447,20 @@ function Stop({
 }
 
 /** 子子任务：状态 + 标题 + 提示词。左边的小方块点一下换到下一个状态，右边的标签点开随便换 */
-function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detail: TaskDetail; drag: DragHandle }) {
+function ChildRow({
+  c,
+  label,
+  parentLabel,
+  detail,
+  drag
+}: {
+  c: Subtask
+  label: string
+  /** 上级子任务的编号：别的卡片拖过来停在这一行上，算停在上级子任务上 */
+  parentLabel: string
+  detail: TaskDetail
+  drag: DragHandle
+}) {
   const done = c.status === 'done'
   const savePrompt = (value: string): void => {
     api.updateSubtask(c.id, { prompt: value })
@@ -422,6 +470,8 @@ function ChildRow({ c, label, detail, drag }: { c: Subtask; label: string; detai
       ref={drag.setNodeRef}
       style={drag.style}
       className={cx('child', done && 'done')}
+      data-drop-sub={c.parentId}
+      data-drop-label={parentLabel}
       {...drag.attributes}
       {...drag.listeners}
       onContextMenu={(e) =>

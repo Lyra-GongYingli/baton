@@ -309,6 +309,11 @@ export interface BatonApi {
   arrangeSubtasks(taskId: string, layout: { id: string; parentId: string }[]): Promise<void>
   /** 删子任务会连同它的子子任务一起删 */
   deleteSubtask(id: string): Promise<void>
+  /**
+   * 把子任务 / 子子任务（连同它的子子任务）挪到另一个任务，排在最后：
+   * parentId 是那个任务里的一个子任务时当它的子子任务，不传就当子任务
+   */
+  moveSubtask(id: string, taskId: string, parentId?: string): Promise<void>
 
   processBoard(): Promise<ProcessBoard>
   lineBoard(): Promise<LineBoard>
