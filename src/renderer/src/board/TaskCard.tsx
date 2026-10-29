@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { nextStatus } from '../../../shared/agents'
 import { expandPrompt, titleFromText } from '../../../shared/prompt'
 import { STATUS_LABEL, type SubtaskBrief, type TaskSummary } from '../../../shared/types'
@@ -21,7 +21,8 @@ export function cardPrompt(t: TaskSummary): string {
 /**
  * 夹在洞洞板上的任务卡。单击打开，双击标题复制，按住拖动排序，把文字拖上来变成一个新子任务；
  * 按住拖到 ChatGPT / Claude 等别的软件的输入框，松手就把提示词粘进去：
- * 拖整张卡是任务的提示词，按住卡上的某一行子任务 / 子子任务拖，就是那一行自己的
+ * 拖整张卡是任务的提示词，按住卡上的某一行子任务 / 子子任务拖，就是那一行自己的。
+ * 做完的子任务收在最下面的「已完成」里
  */
 export function TaskCard({
   task: t,
@@ -43,6 +44,8 @@ export function TaskCard({
   // 标题旁的复制图标：任务自己的提示词
   const copyText = cardPrompt(t)
   const style = { '--c': t.color, '--tilt': tiltOf(t.id), '--i': index } as CSSProperties
+  const open = t.subtasks.filter((s) => s.status !== 'done')
+  const done = t.subtasks.filter((s) => s.status === 'done')
 
   return (
     <div ref={drag?.setNodeRef} style={drag?.style} className={cx('tcard-slot', drag?.isDragging && 'lifted')}>
@@ -73,11 +76,16 @@ export function TaskCard({
         </div>
         <Track statuses={t.statuses} />
         {t.subtasks.length > 0 ? (
-          <ol className="tcard-subs">
-            {t.subtasks.map((s) => (
-              <SubRow key={s.id} s={s} label={`S${s.ref}`} color={t.color} current={s.id === t.current?.id} />
-            ))}
-          </ol>
+          <>
+            {open.length > 0 && (
+              <ol className="tcard-subs">
+                {open.map((s) => (
+                  <SubRow key={s.id} s={s} label={`S${s.ref}`} color={t.color} current={s.id === t.current?.id} />
+                ))}
+              </ol>
+            )}
+            <DoneSubs subtasks={done} color={t.color} />
+          </>
         ) : (
           <div className="tcard-now">
             <span className="muted">还没有子任务，点进来加第一个</span>
@@ -86,6 +94,35 @@ export function TaskCard({
         {drop.over && <div className="tcard-drop">松手，变成一个新子任务</div>}
       </div>
     </div>
+  )
+}
+
+/** 做完的子任务收在卡片最下面，点一下展开 / 收起（不会打开任务，也不会拖动卡片） */
+function DoneSubs({ subtasks, color }: { subtasks: SubtaskBrief[]; color: string }) {
+  const [open, setOpen] = useState(false)
+  if (subtasks.length === 0) return null
+  return (
+    <>
+      <button
+        className="tcard-done-toggle"
+        onPointerDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen(!open)
+        }}
+      >
+        {/* 写明是子任务：卡片下面紧挨着项目自己的「看看已完成的 N 个」（做完的任务） */}
+        {open ? '收起' : '看看'}已完成的 {subtasks.length} 个子任务
+      </button>
+      {open && (
+        <ol className="tcard-subs">
+          {subtasks.map((s) => (
+            <SubRow key={s.id} s={s} label={`S${s.ref}`} color={color} />
+          ))}
+        </ol>
+      )}
+    </>
   )
 }
 

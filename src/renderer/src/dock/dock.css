@@ -280,6 +280,8 @@ body.route-handle {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* 任务的时间：今天 / 10/25 / 今天 – 10/28；逾期标红。挤的时候整块换到下一行，不压缩 */
@@ -383,6 +385,15 @@ body.route-handle {
   text-decoration-color: var(--border-strong);
 }
 
+/* 卡片上做完的子任务收起来的那一行 */
+.tcard-done-toggle {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.tcard-done-toggle:hover {
+  color: var(--text);
+}
 .tcard-now {
   display: flex;
   align-items: center;
@@ -566,6 +577,7 @@ body.route-handle {
   letter-spacing: -0.3px;
   line-height: 1.25;
   margin: 2px 0 0;
+  overflow-wrap: anywhere;
 }
 .dtask-goal {
   margin: 2px 0 10px;
@@ -808,6 +820,11 @@ button.stop-node:active {
   font-size: 13px;
   font-weight: 650;
 }
+/* 标题可以被挤窄：中间没有空格的长词（「Claude/Codex/Muse」这种）也能断开折行，右边的头像和状态不会被挤出框 */
+.stop-title > .inline-display {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .stop.s-done .stop-title {
   color: var(--muted);
   text-decoration: line-through;
@@ -853,6 +870,56 @@ button.stop-node:active {
 }
 .stop.add input:focus {
   box-shadow: none;
+}
+
+/* 做完的子任务收在最下面：「看看已完成的 N 个」，展开后一行一个，和上面子任务的卡片左边对齐 */
+.done-stops {
+  align-items: flex-start;
+  gap: 1px;
+  margin-top: 4px;
+  padding-left: 31px;
+}
+.task-body.compact .done-stops {
+  padding-left: 22px;
+}
+.done-stop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 4px 2px 2px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.done-stop:hover {
+  background: var(--hover);
+}
+.done-stop .ref {
+  min-width: 0;
+  font-size: 10.5px;
+}
+.done-stop-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+.done-stop-check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--c, var(--accent));
+  background: color-mix(in srgb, var(--c, var(--accent)) 16%, transparent);
+}
+.done-stop-check:hover {
+  background: color-mix(in srgb, var(--c, var(--accent)) 30%, transparent);
 }
 
 .legend {
@@ -1882,7 +1949,8 @@ button:hover .mini-card.c {
 }
 .stop-main:hover .row-add,
 .stop-main:hover .row-del,
-.child:hover .row-del {
+.child:hover .row-del,
+.done-stop:hover .row-del {
   opacity: 1;
 }
 .row-add:hover {
@@ -1955,6 +2023,7 @@ button.child-check:hover {
 .child-title {
   font-size: 12.5px;
   font-weight: 550;
+  overflow-wrap: anywhere;
 }
 .child-title .ref {
   margin-right: 6px;
