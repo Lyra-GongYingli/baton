@@ -3,10 +3,12 @@ import { AGENT_BY_ID } from '../shared/agents'
 import { titleFromText } from '../shared/prompt'
 import type { Assignee, HookAgent, LiveBoard, Status } from '../shared/types'
 import * as db from './db'
+import { sessionTitle } from './sessionTitles'
 
 // AI 在跑什么：Claude Code、Codex 通过 hooks 把每个会话的动静报给 Baton（怎么接的见 agentHooks.ts）。
 // 会话发出去的话里认出 Baton 的提示词，就把这个会话归到那个任务 / 子任务 / 子子任务上；
-// 第一句话就认不出来的，在 AI 任务的项目里新建一个任务（带一个交给这个 AI 的同名子任务），和手动建的任务一样用：
+// 第一句话就认不出来的，记成「AI 任务」项目里「AI 会话」这个任务的一个子任务，交给这个 AI，
+// 名字用 AI 给会话起的标题（主体 + 意图），和手动建的子任务一样用：
 //   开始跑 → 那一项是待办或已暂停的，改成进行中；子任务的执行者换成这个 AI
 //   停下来等你批准、这一轮跑完 → 只在头像上提示，不会自动标成完成（AI 停下不等于做完了）
 // 会话存在数据库里，Baton 重启后还认得；关掉的会话从列表里消失，但记一个月，接着用（resume）时还归到原来那一项。
@@ -20,6 +22,8 @@ export interface HookPayload {
   /** 子代理里发生的事件才有 */
   agent_id?: string
   notification_type?: string
+  /** Claude Code 的对话记录文件 */
+  transcript_path?: string
 }
 
 interface Callbacks {
@@ -29,11 +33,13 @@ interface Callbacks {
   onData: () => void
   /** 冒一条提示 */
   onNotice: (text: string) => void
-  /** 认不出来的会话新建任务时放进哪个项目（还没有就当场建一个），返回项目 id */
-  taskProject: () => string
+  /** 自动记下的会话放在哪个项目；还没有是 null */
+  aiProject: () => string | null
+  /** 自动记下的会话都是这个任务的子任务（还没有、或者已经做完了就当场新建一个），返回任务 id */
+  aiTask: () => string
 }
 
-let cb: Callbacks = { onLive: () => {}, onData: () => {}, onNotice: () => {}, taskProject: () => '' }
+let cb: Callbacks = { onLive: () => {}, onData: () => {}, onNotice: () => {}, aiProject: () => null, aiTask: () => '' }
 
 /** 在跑的会话这么久没动静（比如被你中途打断了，收不到「停下」），就当它停了 */
 const RUNNING_QUIET = 30 * 60_000
@@ -45,12 +51,16 @@ const KEEP = 30 * 24 * 3600_000
 export function startLive(callbacks: Callbacks): void {
   cb = callbacks
   sweep()
-  // 以前认不出来、一直空着的会话（这个功能之前开的）：拿第一句话的开头补建任务
+  let changed = db.upgradedSessionTitles() && foldLegacyTasks()
+  // 以前认不出来、一直空着的会话（这个功能之前开的）：补记成「AI 会话」里的子任务
   for (const s of db.listAgentSessions()) {
     if (s.endedAt || s.itemId || !s.snippet) continue
-    const itemId = newTask(s.agent, titleFromText(s.snippet))
-    db.saveAgentSession({ ...s, itemId })
-    claim(itemId, s.agent, true)
+    adopt(s, s.snippet)
+    db.saveAgentSession(s)
+    claim(s.itemId, s.agent, true)
+    changed = true
+  }
+  if (changed) {
     cb.onData()
     cb.onLive()
   }
@@ -65,14 +75,30 @@ export function handleHook(agent: HookAgent, p: HookPayload, pid: number): void 
   if (p.hook_event_name === 'SessionEnd') {
     // 关掉的会话先留着：接着用的时候还认得在做哪一项
     if (old && !old.endedAt) {
-      db.saveAgentSession({ ...old, state: 'idle', updatedAt: now, endedAt: now })
+      const s: db.AgentSessionRow = { ...old, state: 'idle', updatedAt: now, endedAt: now }
+      if (followTitle(s)) cb.onData()
+      db.saveAgentSession(s)
       cb.onLive()
     }
     return
   }
   const s: db.AgentSessionRow = old
     ? { ...old, updatedAt: now }
-    : { agent, sessionId, itemId: '', state: 'idle', cwd: '', snippet: '', pid: 0, pidOk: false, startedAt: now, updatedAt: now, endedAt: 0 }
+    : {
+        agent,
+        sessionId,
+        itemId: '',
+        state: 'idle',
+        cwd: '',
+        snippet: '',
+        pid: 0,
+        pidOk: false,
+        startedAt: now,
+        updatedAt: now,
+        endedAt: 0,
+        title: '',
+        transcript: ''
+      }
   if (s.endedAt) {
     // 关掉的会话又有动静（接着用了）：重新算开着，进程也换了
     s.endedAt = 0
@@ -80,6 +106,7 @@ export function handleHook(agent: HookAgent, p: HookPayload, pid: number): void 
     s.pidOk = false
   }
   if (p.cwd) s.cwd = p.cwd
+  if (p.transcript_path) s.transcript = p.transcript_path
   if (pid > 0) {
     s.pidOk = pid === s.pid
     s.pid = pid
@@ -98,11 +125,12 @@ export function handleHook(agent: HookAgent, p: HookPayload, pid: number): void 
       const hit = recognize(prompt)
       if (hit && hit !== s.itemId) {
         s.itemId = hit
+        // 认出来的是你自己写的那一项，不跟着 AI 的标题改名
+        s.title = ''
         announce(agent, hit)
       } else if (!hit && !s.itemId && prompt.trim()) {
-        // 认不出来，这个会话也还没在做哪一项：给它建一个任务。建过的被你删了，就不再建
-        s.itemId = newTask(agent, titleFromText(prompt))
-        created = true
+        // 认不出来，这个会话也还没在做哪一项：记成「AI 会话」里的一个子任务。记过的被你删了，就不再记
+        created = adopt(s, prompt)
       }
       break
     }
@@ -122,8 +150,10 @@ export function handleHook(agent: HookAgent, p: HookPayload, pid: number): void 
       break
   }
 
+  // 自动记下的那一项跟着 AI 给会话起的标题走：一轮开始、一轮跑完时看一眼
+  const renamed = (p.hook_event_name === 'UserPromptSubmit' || p.hook_event_name === 'Stop') && followTitle(s)
   db.saveAgentSession(s)
-  if ((started && s.itemId && claim(s.itemId, agent, true)) || created) cb.onData()
+  if ((started && s.itemId && claim(s.itemId, agent, true)) || created || renamed) cb.onData()
   if (!old || old.endedAt || old.state !== s.state || old.itemId !== s.itemId) cb.onLive()
 }
 
@@ -204,16 +234,78 @@ function claim(itemId: string, agent: HookAgent, start: boolean): boolean {
   return true
 }
 
+// ---------- 认不出来的会话：记成「AI 会话」里的子任务 ----------
+
 /**
- * 认不出来的会话：在 AI 任务的项目里新建一个任务，带一个同名的子任务交给这个 AI（和手动建的一样，什么都能改）。
- * 返回子任务 id，会话就归到它上面
+ * 把会话记成「AI 会话」里的一个子任务，交给这个 AI（和手动建的一样，什么都能改），会话归到它上面。
+ * 名字用 AI 给会话起的标题，还没起好就先用第一句话。接着上一段对话开的新会话一开头就有标题：
+ * 上一段记下的那一项还没做完，就接着归到它上面，不再记一个。新记了一项返回 true
  */
-function newTask(agent: HookAgent, title: string): string {
-  const taskId = db.createTask({ projectId: cb.taskProject(), title })
-  const subId = db.createSubtask(taskId, { title, agent })
-  const project = db.getTask(taskId)?.project.title ?? ''
-  cb.onNotice(`新任务：${AGENT_BY_ID[agent].name} 在做「${title}」，放在「${project}」里`)
-  return subId
+function adopt(s: db.AgentSessionRow, text: string): boolean {
+  const title = aiTitle(s)
+  const same = title && db.autoItemWithTitle(s.agent, title)
+  if (title && same) {
+    s.itemId = same
+    s.title = title
+    announce(s.agent, same)
+    return false
+  }
+  s.title = title ?? draftTitle(text)
+  s.itemId = db.createSubtask(cb.aiTask(), { title: s.title, agent: s.agent })
+  cb.onNotice(`记下了：${AGENT_BY_ID[s.agent].name} 在做「${s.title}」`)
+  return true
+}
+
+function aiTitle(s: db.AgentSessionRow): string | null {
+  return sessionTitle(s.agent, s.sessionId, s.transcript)
+}
+
+/** AI 还没起好标题时先用第一句话的第一行，去掉开头「1、」「(1)」这样的编号 */
+function draftTitle(text: string): string {
+  return titleFromText(text.replace(/^\s*(?:[（(]?\d+[)）.、]|[一二三四五六七八九十]+、)\s*/, ''))
+}
+
+/**
+ * 自动记下的子任务跟着 AI 给会话起的标题改名（第一轮跑完才起好；在 Claude、Codex 里给会话改了名也跟着变）。
+ * 你在 Baton 里改过名字的不动。改了名返回 true
+ */
+function followTitle(s: db.AgentSessionRow): boolean {
+  if (!s.title || !s.itemId) return false
+  const title = aiTitle(s)
+  if (!title || title === s.title) return false
+  const untouched = db.subtaskInfo(s.itemId)?.title === s.title
+  if (untouched) db.updateSubtask(s.itemId, { title })
+  s.title = title
+  return untouched
+}
+
+/**
+ * 上一版给每个会话单独建了一个任务（里面一个同名子任务）。升级后收拢一次：
+ * 子任务搬进「AI 会话」、换成 AI 起的标题，同一段对话（标题一样）的合成一项，空下来的任务删掉。
+ * 只动还在 AI 任务项目里、没改过样子的；有改动返回 true
+ */
+function foldLegacyTasks(): boolean {
+  const projectId = cb.aiProject()
+  const legacy = db.listAgentSessions().flatMap((s) => {
+    const wrapper = s.itemId && !s.title ? db.loneWrapper(s.itemId) : null
+    return wrapper && wrapper.projectId === projectId ? [{ s, wrapper: wrapper.taskId }] : []
+  })
+  if (legacy.length === 0) return false
+  const container = cb.aiTask()
+  for (const { s, wrapper } of legacy) {
+    const title = aiTitle(s)
+    const same = title && db.autoItemWithTitle(s.agent, title)
+    if (title && same) {
+      db.deleteTask(wrapper)
+      db.saveAgentSession({ ...s, itemId: same, title })
+      continue
+    }
+    db.moveSubtask(s.itemId, container)
+    db.deleteTask(wrapper)
+    if (title) db.updateSubtask(s.itemId, { title })
+    db.saveAgentSession({ ...s, title: title ?? db.subtaskInfo(s.itemId)?.title ?? '' })
+  }
+  return true
 }
 
 function announce(agent: HookAgent, itemId: string): void {

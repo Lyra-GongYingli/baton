@@ -17,8 +17,10 @@ interface StoredSettings {
   mcpToken: string | null
   /** 晾衣绳固定住了：一直挂着，点别的软件也不收，重启后还在 */
   linePinned: boolean
-  /** 认不出是哪个任务的 AI 会话，自动建的任务放进哪个项目；null = 还没定（用到时找或建「AI 任务」） */
+  /** 认不出是哪个任务的 AI 会话，自动记在哪个项目里；null = 还没定（用到时找或建「AI 任务」） */
   aiProjectId: string | null
+  /** 自动记下的 AI 会话都是这个任务的子任务；null = 还没有（用到时建「AI 会话」） */
+  aiTaskId: string | null
 }
 
 const DEFAULTS: StoredSettings = {
@@ -27,7 +29,8 @@ const DEFAULTS: StoredSettings = {
   handleRatio: 0.32,
   mcpToken: null,
   linePinned: false,
-  aiProjectId: null
+  aiProjectId: null,
+  aiTaskId: null
 }
 
 /** settings.json 是不是第一次创建（用来在首次启动时展开侧边栏打个招呼） */
@@ -56,7 +59,8 @@ function load(): StoredSettings {
         handleRatio: stored.handleRatio ?? DEFAULTS.handleRatio,
         mcpToken: stored.mcpToken ?? null,
         linePinned: stored.linePinned ?? false,
-        aiProjectId: stored.aiProjectId ?? null
+        aiProjectId: stored.aiProjectId ?? null,
+        aiTaskId: stored.aiTaskId ?? null
       }
     } catch {
       // 文件坏了就用默认值
@@ -93,6 +97,14 @@ export function getAiProjectId(): string | null {
 
 export function setAiProjectId(aiProjectId: string): void {
   if (load().aiProjectId !== aiProjectId) save({ aiProjectId })
+}
+
+export function getAiTaskId(): string | null {
+  return load().aiTaskId
+}
+
+export function setAiTaskId(aiTaskId: string): void {
+  if (load().aiTaskId !== aiTaskId) save({ aiTaskId })
 }
 
 export function getPublicSettings(): Omit<PublicSettings, 'mcp' | 'aiProjectId'> {

@@ -27,6 +27,8 @@ import type {
 type Row = Record<string, SQLInputValue>
 
 let db: DatabaseSync
+/** 这次打开时才给 agent_sessions 加上 title 列：上一版给每个会话单独建的任务，要收拢一次 */
+let sessionTitlesAdded = false
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -107,6 +109,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   started_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   ended_at   INTEGER NOT NULL DEFAULT 0, -- 会话关掉的时间，0 = 还开着。关掉的留一阵，接着用（resume）时还归到原来那一项
+  title      TEXT NOT NULL DEFAULT '', -- 自动记下的子任务用的名字（AI 给会话起的标题，还没有时是第一句话）；空 = 在做的不是自动记下的那种
+  transcript TEXT NOT NULL DEFAULT '', -- Claude Code 的对话记录文件，从里面读会话标题
   PRIMARY KEY (agent, session_id)
 );
 `
@@ -231,9 +235,19 @@ function addMissingColumns(): void {
     db.exec("UPDATE subtasks SET done_at = updated_at WHERE status = 'done'")
   }
 
-  if (!columns('agent_sessions').includes('ended_at')) {
+  const sessionCols = columns('agent_sessions')
+  if (!sessionCols.includes('ended_at')) {
     db.exec('ALTER TABLE agent_sessions ADD COLUMN ended_at INTEGER NOT NULL DEFAULT 0')
   }
+  if (!sessionCols.includes('title')) {
+    db.exec("ALTER TABLE agent_sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+    db.exec("ALTER TABLE agent_sessions ADD COLUMN transcript TEXT NOT NULL DEFAULT ''")
+    sessionTitlesAdded = true
+  }
+}
+
+export function upgradedSessionTitles(): boolean {
+  return sessionTitlesAdded
 }
 
 /** 没有项目的任务（比如老数据）放进「未分组」 */
@@ -504,6 +518,12 @@ export function deleteTask(id: string): void {
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
 }
 
+/** 任务在哪个项目、什么状态；删掉了是 null */
+export function taskPlace(id: string): { projectId: string; status: Status } | null {
+  const r = db.prepare('SELECT project_id, status FROM tasks WHERE id = ?').get(id) as Row | undefined
+  return r ? { projectId: r.project_id as string, status: r.status as Status } : null
+}
+
 /** index 是在目标项目「未完成任务」里的位置（已完成的任务单独折叠，不参与排序） */
 export function moveTask(id: string, projectId: string, index: number): void {
   const others = (
@@ -655,6 +675,27 @@ export function arrangeSubtasks(taskId: string, layout: { id: string; parentId: 
 export function subtaskInfo(id: string): { taskId: string; parentId: string; title: string } | null {
   const r = db.prepare('SELECT task_id, parent_id, title FROM subtasks WHERE id = ?').get(id) as Row | undefined
   return r ? { taskId: r.task_id as string, parentId: r.parent_id as string, title: r.title as string } : null
+}
+
+/** 把一个子任务（连同它的子子任务）挪到另一个任务的最后，两边的 S 编号、状态都重新对齐 */
+export function moveSubtask(id: string, taskId: string): void {
+  const info = subtaskInfo(id)
+  if (!info || info.parentId || info.taskId === taskId) return
+  const max = db
+    .prepare("SELECT COALESCE(MAX(position), 0) AS p FROM subtasks WHERE task_id = ? AND parent_id = ''")
+    .get(taskId) as Row
+  db.prepare('UPDATE subtasks SET task_id = ?, position = ?, chained = 0, updated_at = ? WHERE id = ?').run(
+    taskId,
+    Number(max.p) + 1,
+    Date.now(),
+    id
+  )
+  db.prepare('UPDATE subtasks SET task_id = ? WHERE parent_id = ?').run(taskId, id)
+  for (const t of [info.taskId, taskId]) {
+    renumberSubtasks(t)
+    touchTask(t)
+    syncTaskStatus(t)
+  }
 }
 
 export function deleteSubtask(id: string): void {
@@ -910,6 +951,10 @@ export interface AgentSessionRow {
   updatedAt: number
   /** 关掉的时间，0 = 还开着 */
   endedAt: number
+  /** 自动记下的子任务用的名字；空 = 在做的不是自动记下的那种 */
+  title: string
+  /** Claude Code 的对话记录文件 */
+  transcript: string
 }
 
 function toAgentSession(r: Row): AgentSessionRow {
@@ -924,7 +969,9 @@ function toAgentSession(r: Row): AgentSessionRow {
     pidOk: Boolean(r.pid_ok),
     startedAt: Number(r.started_at),
     updatedAt: Number(r.updated_at),
-    endedAt: Number(r.ended_at)
+    endedAt: Number(r.ended_at),
+    title: r.title as string,
+    transcript: r.transcript as string
   }
 }
 
@@ -939,12 +986,53 @@ export function getAgentSession(agent: HookAgent, sessionId: string): AgentSessi
 
 export function saveAgentSession(s: AgentSessionRow): void {
   db.prepare(
-    `INSERT INTO agent_sessions (agent, session_id, item_id, state, cwd, snippet, pid, pid_ok, started_at, updated_at, ended_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO agent_sessions (agent, session_id, item_id, state, cwd, snippet, pid, pid_ok, started_at, updated_at, ended_at, title, transcript)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent, session_id) DO UPDATE SET
        item_id = excluded.item_id, state = excluded.state, cwd = excluded.cwd, snippet = excluded.snippet,
-       pid = excluded.pid, pid_ok = excluded.pid_ok, updated_at = excluded.updated_at, ended_at = excluded.ended_at`
-  ).run(s.agent, s.sessionId, s.itemId, s.state, s.cwd, s.snippet, s.pid, s.pidOk ? 1 : 0, s.startedAt, s.updatedAt, s.endedAt)
+       pid = excluded.pid, pid_ok = excluded.pid_ok, updated_at = excluded.updated_at, ended_at = excluded.ended_at,
+       title = excluded.title, transcript = excluded.transcript`
+  ).run(
+    s.agent,
+    s.sessionId,
+    s.itemId,
+    s.state,
+    s.cwd,
+    s.snippet,
+    s.pid,
+    s.pidOk ? 1 : 0,
+    s.startedAt,
+    s.updatedAt,
+    s.endedAt,
+    s.title,
+    s.transcript
+  )
+}
+
+/** 同一个 AI 先前自动记下、标题一样、还没做完的子任务（接着上一段对话开的新会话归到它上面）；没有是 null */
+export function autoItemWithTitle(agent: HookAgent, title: string): string | null {
+  const r = db
+    .prepare(
+      `SELECT a.item_id FROM agent_sessions a JOIN subtasks s ON s.id = a.item_id
+       WHERE a.agent = ? AND a.title = ? AND s.status != 'done' ORDER BY a.updated_at DESC LIMIT 1`
+    )
+    .get(agent, title) as Row | undefined
+  return r ? (r.item_id as string) : null
+}
+
+/**
+ * 上一版给一个会话单独建的任务：任务里只有这一个子任务、名字一样，没写目标和提示词。
+ * 是的话返回那个任务和它所在的项目，不是返回 null
+ */
+export function loneWrapper(subtaskId: string): { taskId: string; projectId: string } | null {
+  const r = db
+    .prepare(
+      `SELECT t.id, t.project_id FROM subtasks s JOIN tasks t ON t.id = s.task_id
+       WHERE s.id = ? AND s.parent_id = '' AND t.title = s.title AND t.goal = '' AND t.prompt = ''
+         AND (SELECT COUNT(*) FROM subtasks x WHERE x.task_id = t.id) = 1`
+    )
+    .get(subtaskId) as Row | undefined
+  return r ? { taskId: r.id as string, projectId: r.project_id as string } : null
 }
 
 /** 删掉一个会话；真删了返回 true */

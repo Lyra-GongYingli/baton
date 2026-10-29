@@ -198,7 +198,7 @@ function AgentHooksSection({ aiProjectId, onChange }: { aiProjectId: string | nu
       <h2>自动认出 AI 在做哪个任务</h2>
       <p className="muted small">
         接入以后，Claude Code 和 Codex 每开始一轮、等你批准、跑完一轮，都会告诉 Baton（只发到这台电脑上的 Baton，Baton
-        没开着时什么也不会发生）。从 Baton 拖出去或复制的提示词一发出去，Baton 就认得出是哪个任务：待办的自动变成进行中，头像动起来；等你批准时头像上亮黄点，一轮跑完亮蓝点「等你看」，不会自动标成完成。第一句话认不出是哪个任务的会话，会自动建成一个新任务，和手动建的一样用。正在跑的会话列在晾衣绳便签的最上面。新开的会话生效。
+        没开着时什么也不会发生）。从 Baton 拖出去或复制的提示词一发出去，Baton 就认得出是哪个任务：待办的自动变成进行中，头像动起来；等你批准时头像上亮黄点，一轮跑完亮蓝点「等你看」，不会自动标成完成。第一句话认不出是哪个任务的会话，会记成「AI 会话」里的一个子任务，名字用 AI 给会话起的标题，和手动建的子任务一样用。正在跑的会话列在晾衣绳便签的最上面。新开的会话生效。
       </p>
       {states === null && <div className="setting-row muted small">正在检查…</div>}
       {states?.map((s) => (
@@ -226,7 +226,7 @@ function AgentHooksSection({ aiProjectId, onChange }: { aiProjectId: string | nu
       <div className="setting-row">
         <div>
           <div className="setting-label">认不出来的会话放进</div>
-          <div className="muted small">在这个项目里建一个任务，带一个交给那个 AI 的同名子任务；建好以后可以拖到别的项目</div>
+          <div className="muted small">记成这个项目里「AI 会话」任务的子任务，交给那个 AI；「AI 会话」做完了，下一个会话会另起一个</div>
         </div>
         <div className="setting-control">
           <select

@@ -139,11 +139,28 @@ function afterMutation(): void {
 }
 
 const AI_PROJECT = 'AI 任务'
+const AI_TASK = 'AI 会话'
 
-/** 认不出是哪个任务的 AI 会话，自动建的任务放进哪个项目：设置里定的；没定过、或者删掉了，用叫「AI 任务」的那个。都没有是 null */
+/** 认不出是哪个任务的 AI 会话，自动记在哪个项目里：设置里定的；没定过、或者删掉了，用叫「AI 任务」的那个。都没有是 null */
 function aiProjectId(): string | null {
   const id = settings.getAiProjectId()
   return id && db.projectExists(id) ? id : db.projectIdByTitle(AI_PROJECT)
+}
+
+/**
+ * 自动记下的 AI 会话都是「AI 会话」这个任务的子任务。上次那个还在这个项目里、没做完就接着用（改了名也认），
+ * 删掉了、做完了、被挪到别的项目了，就新建一个。项目还没有的话也一起建
+ */
+function aiTaskId(): string {
+  const projectId = aiProjectId() ?? db.createProject({ title: AI_PROJECT })
+  // 记下 id：以后项目、任务改了名，也还放在这儿
+  settings.setAiProjectId(projectId)
+  const id = settings.getAiTaskId()
+  const place = id ? db.taskPlace(id) : null
+  if (id && place && place.projectId === projectId && place.status !== 'done') return id
+  const fresh = db.createTask({ projectId, title: AI_TASK })
+  settings.setAiTaskId(fresh)
+  return fresh
 }
 
 /** 接入 / 断开 Claude Code、Codex 的 hooks；接入情况变了，头像动不动的规则也跟着变 */
@@ -293,17 +310,14 @@ if (!app.requestSingleInstanceLock()) {
     if (firstRun && db.listProjects().length === 0) db.createProject({ title: '我的项目' })
     dock.createDock({ load: loadRenderer, webPreferences })
     line.createLine({ load: loadRenderer, webPreferences })
-    // Claude Code、Codex 通过 hooks 报上来的会话：认出在做哪个任务就标成进行中，认不出来就建一个任务；会话列表变了就刷新
+    // Claude Code、Codex 通过 hooks 报上来的会话：认出在做哪个任务就标成进行中，认不出来就记成「AI 会话」里的一个子任务；
+    // 会话列表变了就刷新
     live.startLive({
       onLive: () => broadcast('live-changed'),
       onData: afterMutation,
       onNotice: (text) => broadcast('remote-change', text),
-      taskProject: () => {
-        const id = aiProjectId() ?? db.createProject({ title: AI_PROJECT })
-        // 记下 id：以后项目改了名，也还放在这儿
-        settings.setAiProjectId(id)
-        return id
-      }
+      aiProject: aiProjectId,
+      aiTask: aiTaskId
     })
     // 让 Claude Code 等 AI 工具能直接操控 Baton；AI 改了东西就刷新界面并提示一下
     mcp.startMcp(

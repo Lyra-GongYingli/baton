@@ -22,10 +22,15 @@ type Handler = { type?: unknown; command?: unknown; [key: string]: unknown }
 type Group = { matcher?: unknown; hooks?: Handler[]; [key: string]: unknown }
 type Config = { hooks?: Record<string, Group[]>; [key: string]: unknown }
 
-/** 配置文件：Claude Code 是 ~/.claude/settings.json，Codex 是 ~/.codex/hooks.json（两边各自的环境变量改了位置也跟着走） */
+/** 配置目录：Claude Code 是 ~/.claude，Codex 是 ~/.codex（两边各自的环境变量改了位置也跟着走） */
+export function configDir(agent: HookAgent): string {
+  if (agent === 'claude') return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+  return process.env.CODEX_HOME || join(homedir(), '.codex')
+}
+
+/** 配置文件：Claude Code 是 settings.json，Codex 是 hooks.json */
 function configFile(agent: HookAgent): string {
-  if (agent === 'claude') return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json')
-  return join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'hooks.json')
+  return join(configDir(agent), agent === 'claude' ? 'settings.json' : 'hooks.json')
 }
 
 function tilde(path: string): string {
