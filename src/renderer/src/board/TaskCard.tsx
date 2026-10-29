@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import { nextStatus } from '../../../shared/agents'
-import { expandPrompt } from '../../../shared/prompt'
+import { expandPrompt, titleFromText } from '../../../shared/prompt'
 import { STATUS_LABEL, type SubtaskBrief, type TaskSummary } from '../../../shared/types'
 import { api } from '../api'
 import { AgentIcon } from '../components/AgentIcon'
@@ -11,7 +11,7 @@ import { StatusGlyph, TaskStatusPicker } from '../components/StatusPicker'
 import { PromptPill, tiltOf, toast, Track, useDropTarget } from '../dock/parts'
 import { DateChip } from '../components/DatePicker'
 import { busyOf, LiveMark, ownLive, shownState, useLiveBoard, useLiveOf } from '../live'
-import { cx, titleFromText } from '../util'
+import { cx } from '../util'
 
 /** 整张任务卡带的提示词：只是任务自己的。子任务、子子任务的提示词由卡上各自那一行带 */
 export function cardPrompt(t: TaskSummary): string {

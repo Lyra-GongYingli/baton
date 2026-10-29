@@ -74,7 +74,7 @@ export function Settings() {
 
       <McpSection mcp={settings.mcp} />
 
-      <AgentHooksSection />
+      <AgentHooksSection aiProjectId={settings.aiProjectId} onChange={reload} />
 
       <section className="settings-section">
         <h2>数据</h2>
@@ -166,9 +166,10 @@ function McpSection({ mcp }: { mcp: { url: string; token: string; running: boole
 
 const HOOK_NAMES: Record<HookAgent, string> = { claude: 'Claude Code', codex: 'Codex' }
 
-/** 自动认出 AI 在做哪个任务：把 Baton 的 hooks 接进 Claude Code、Codex */
-function AgentHooksSection() {
+/** 自动认出 AI 在做哪个任务：把 Baton 的 hooks 接进 Claude Code、Codex；认不出来的会话建成任务放进哪个项目 */
+function AgentHooksSection({ aiProjectId, onChange }: { aiProjectId: string | null; onChange: () => void }) {
   const [states, setStates] = useState<AgentHooksState[] | null>(null)
+  const [trees] = useData(() => api.listProjects(), [])
   const [busy, setBusy] = useState<HookAgent | null>(null)
   const [msg, setMsg] = useState<Partial<Record<HookAgent, string>>>({})
   useEffect(() => {
@@ -197,7 +198,7 @@ function AgentHooksSection() {
       <h2>自动认出 AI 在做哪个任务</h2>
       <p className="muted small">
         接入以后，Claude Code 和 Codex 每开始一轮、等你批准、跑完一轮，都会告诉 Baton（只发到这台电脑上的 Baton，Baton
-        没开着时什么也不会发生）。从 Baton 拖出去或复制的提示词一发出去，Baton 就认得出是哪个任务：待办的自动变成进行中，头像动起来；等你批准时头像上亮黄点，一轮跑完亮蓝点「等你看」，不会自动标成完成。正在跑的会话列在晾衣绳便签的最上面，没认出来的可以手动归到某个任务。新开的会话生效。
+        没开着时什么也不会发生）。从 Baton 拖出去或复制的提示词一发出去，Baton 就认得出是哪个任务：待办的自动变成进行中，头像动起来；等你批准时头像上亮黄点，一轮跑完亮蓝点「等你看」，不会自动标成完成。第一句话认不出是哪个任务的会话，会自动建成一个新任务，和手动建的一样用。正在跑的会话列在晾衣绳便签的最上面。新开的会话生效。
       </p>
       {states === null && <div className="setting-row muted small">正在检查…</div>}
       {states?.map((s) => (
@@ -222,6 +223,30 @@ function AgentHooksSection() {
           </div>
         </div>
       ))}
+      <div className="setting-row">
+        <div>
+          <div className="setting-label">认不出来的会话放进</div>
+          <div className="muted small">在这个项目里建一个任务，带一个交给那个 AI 的同名子任务；建好以后可以拖到别的项目</div>
+        </div>
+        <div className="setting-control">
+          <select
+            className="select"
+            value={aiProjectId ?? ''}
+            onChange={async (e) => {
+              await api.setAiProject(e.target.value)
+              onChange()
+            }}
+          >
+            {/* 还没有的话，第一次用到时才建「AI 任务」 */}
+            {!aiProjectId && <option value="">AI 任务（用到时新建）</option>}
+            {trees?.map(({ project }) => (
+              <option key={project.id} value={project.id}>
+                {project.title}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
     </section>
   )
 }

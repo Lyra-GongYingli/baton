@@ -138,6 +138,14 @@ function afterMutation(): void {
   refreshTray()
 }
 
+const AI_PROJECT = 'AI 任务'
+
+/** 认不出是哪个任务的 AI 会话，自动建的任务放进哪个项目：设置里定的；没定过、或者删掉了，用叫「AI 任务」的那个。都没有是 null */
+function aiProjectId(): string | null {
+  const id = settings.getAiProjectId()
+  return id && db.projectExists(id) ? id : db.projectIdByTitle(AI_PROJECT)
+}
+
 /** 接入 / 断开 Claude Code、Codex 的 hooks；接入情况变了，头像动不动的规则也跟着变 */
 function setHooks(agent: HookAgent, on: boolean): { ok: boolean; message: string } {
   const res = on
@@ -188,6 +196,7 @@ const handlers: Handlers = {
 
   getSettings: () => ({
     ...settings.getPublicSettings(),
+    aiProjectId: aiProjectId(),
     mcp: { url: mcp.MCP_URL, token: settings.getMcpToken(), ...mcp.mcpState() }
   }),
   setCurrentTask: (id) => {
@@ -221,7 +230,9 @@ const handlers: Handlers = {
   claudeCodeStatus,
   connectClaudeCode: () => connectClaudeCode(mcp.MCP_URL, settings.getMcpToken()),
   liveBoard: () => live.liveBoard(agentHooks.hooksEnabled(mcp.HOOKS_URL, settings.getMcpToken())),
-  bindLiveSession: live.bindSession,
+  setAiProject: (id) => {
+    if (db.projectExists(id)) settings.setAiProjectId(id)
+  },
   agentHooksStatus: () => HOOK_AGENTS.map((a) => agentHooks.hooksState(a, mcp.HOOKS_URL, settings.getMcpToken())),
   connectAgentHooks: (agent) => setHooks(agent, true),
   disconnectAgentHooks: (agent) => setHooks(agent, false),
@@ -282,11 +293,17 @@ if (!app.requestSingleInstanceLock()) {
     if (firstRun && db.listProjects().length === 0) db.createProject({ title: '我的项目' })
     dock.createDock({ load: loadRenderer, webPreferences })
     line.createLine({ load: loadRenderer, webPreferences })
-    // Claude Code、Codex 通过 hooks 报上来的会话：认出在做哪个任务就标成进行中，会话列表变了就刷新
+    // Claude Code、Codex 通过 hooks 报上来的会话：认出在做哪个任务就标成进行中，认不出来就建一个任务；会话列表变了就刷新
     live.startLive({
       onLive: () => broadcast('live-changed'),
       onData: afterMutation,
-      onNotice: (text) => broadcast('remote-change', text)
+      onNotice: (text) => broadcast('remote-change', text),
+      taskProject: () => {
+        const id = aiProjectId() ?? db.createProject({ title: AI_PROJECT })
+        // 记下 id：以后项目改了名，也还放在这儿
+        settings.setAiProjectId(id)
+        return id
+      }
     })
     // 让 Claude Code 等 AI 工具能直接操控 Baton；AI 改了东西就刷新界面并提示一下
     mcp.startMcp(

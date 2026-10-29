@@ -14,8 +14,8 @@ import { expandPrompt } from '../../../shared/prompt'
 import {
   LIVE_LABEL,
   STATUS_LABEL,
-  type LineBoard,
   type LineState,
+  type LiveItem,
   type LiveSession,
   type Status,
   type TaskDetail
@@ -62,12 +62,13 @@ const NOTE_SECTIONS: { status: Status; name: string }[] = [
 
 type Phase = 'hidden' | 'in' | 'out'
 type Flash = { key: string; text: string; id: number }
-/** 被拖动的东西：一张任务卡，或便签上的一个任务。带着提示词的还能拖出去丢进别的软件的输入框 */
-type Dragged = { taskId: string; title: string; color: string; dragOut?: DragOut }
+/**
+ * 被拖动的东西：一张任务卡，或便签上的一项（AI 会话那一栏里也可能是子任务、子子任务，subtaskId 就是它）。
+ * 带着提示词的还能拖出去丢进别的软件的输入框
+ */
+type Dragged = { taskId: string; subtaskId?: string; title: string; color: string; dragOut?: DragOut }
 /** 便签上的一行 */
 type NoteEntry = { id: string; title: string; color: string; projectTitle: string; status: Status; from?: string; prompt: string }
-/** 「归到…」下拉框里的一组：一个没做完的任务，和它下面没做完的子任务、子子任务 */
-type BindGroup = { taskId: string; taskTitle: string; items: { id: string; label: string }[] }
 
 // 窗口的空白处要让点击穿过去，鼠标进到卡片上时才接住
 let interactive = false
@@ -214,17 +215,23 @@ export function LineApp() {
     setFlash({ key: 'note', text: `「${entry.title}」→ ${STATUS_LABEL[status]}`, id: Date.now() })
   }
 
+  /** 子任务、子子任务换状态（AI 会话在做的那一项）：任务跟着子任务的进度走 */
+  const setSubtaskStatus = (subtaskId: string, title: string, status: Status): void => {
+    api.updateSubtask(subtaskId, { status })
+    setFlash({ key: 'note', text: `「${title}」→ ${STATUS_LABEL[status]}`, id: Date.now() })
+  }
+
   const hangers: { key: string; node: ReactNode }[] = [
     {
       key: 'note',
       node: (
         <Note
           noteOf={noteOf}
-          groups={bindGroups(board)}
           dragging={Boolean(dragged)}
           pinned={pinned}
           onOpen={openTask}
           onStatus={setTaskStatus}
+          onSubtaskStatus={setSubtaskStatus}
         />
       )
     },
@@ -259,10 +266,12 @@ export function LineApp() {
           markDragging(false)
           setDragged(null)
           if (!over) return
-          const { taskId } = active.data.current as Dragged
+          const { taskId, subtaskId, title } = active.data.current as Dragged
           const target = String(over.id)
-          if (target.startsWith(SECTION)) setTaskStatus(taskId, target.slice(SECTION.length) as Status)
-          else if (target === ACTIVE_ZONE) setTaskStatus(taskId, 'active')
+          const status = target.startsWith(SECTION) ? (target.slice(SECTION.length) as Status) : target === ACTIVE_ZONE ? 'active' : null
+          if (!status) return
+          if (subtaskId) setSubtaskStatus(subtaskId, title, status)
+          else setTaskStatus(taskId, status)
         }}
       >
         <ActiveZone />
@@ -339,18 +348,18 @@ function Clip() {
 /** 最左边的便签：待办 / 已暂停 / 今天完成 的任务。每一栏都能把任务卡拖进来 */
 function Note({
   noteOf,
-  groups,
   dragging,
   pinned,
   onOpen,
-  onStatus
+  onStatus,
+  onSubtaskStatus
 }: {
   noteOf: (s: Status) => NoteEntry[]
-  groups: BindGroup[]
   dragging: boolean
   pinned: boolean
   onOpen: (taskId: string) => void
   onStatus: (taskId: string, status: Status) => void
+  onSubtaskStatus: (subtaskId: string, title: string, status: Status) => void
 }) {
   const today = new Date()
   const [folded, setFolded] = useState<Status[]>(loadFolded)
@@ -371,7 +380,7 @@ function Note({
       </div>
       {/* 任务多了便签不会无限变长：这里面自己滚动，日期留在上面 */}
       <div className="line-note-body">
-        <LiveSection groups={groups} onOpen={onOpen} />
+        <LiveSection onOpen={onOpen} onStatus={onStatus} onSubtaskStatus={onSubtaskStatus} />
         {NOTE_SECTIONS.map(({ status, name }) => (
           <NoteSection
             key={status}
@@ -470,34 +479,25 @@ function NoteItem({
   )
 }
 
-/** 没做完的任务（进行中、待办、已暂停），各带着没做完的子任务、子子任务：给没认出来的会话选一个归过去 */
-function bindGroups(board: LineBoard): BindGroup[] {
-  type Row = { id: string; ref: number; title: string; status: Status; children: { id: string; title: string; status: Status }[] }
-  const group = (taskId: string, taskTitle: string, subs: Row[]): BindGroup => ({
-    taskId,
-    taskTitle,
-    items: [
-      { id: taskId, label: '整个任务' },
-      ...subs.flatMap((s) => [
-        ...(s.status === 'done' ? [] : [{ id: s.id, label: `S${s.ref} ${s.title}` }]),
-        ...s.children.flatMap((c, i) => (c.status === 'done' ? [] : [{ id: c.id, label: `S${s.ref}.${i + 1} ${c.title}` }]))
-      ])
-    ]
-  })
-  return [
-    ...board.active.map((d) => group(d.task.id, d.task.title, d.subtasks)),
-    ...[...board.todo, ...board.paused].map((t) => group(t.id, t.title, t.subtasks))
-  ]
-}
-
 /**
- * 便签最上面：Claude Code、Codex 的会话（接入了自动检测才有）。
- * 正在跑、等你批准的都列出来；跑完一轮的，只列认出来、还没做完的（等你看）。
- * 认出来的写着在做哪一项，点一下打开、右击改它的状态或解绑；没认出来的可以在下拉框里归到某个任务
+ * 便签最上面：Claude Code、Codex 的会话在做的那一项（接入了自动检测才有）。
+ * 正在跑、等你批准的都列出来；跑完一轮的，只列那一项还没做完的（等你看）。
+ * 每一行就是那个任务 / 子任务 / 子子任务，和下面的任务一样用：点一下打开，右击改状态，
+ * 拖到便签的某一栏改状态、拖到绳子上开始做，填了提示词的拖到 AI 的输入框粘贴
  */
-function LiveSection({ groups, onOpen }: { groups: BindGroup[]; onOpen: (taskId: string) => void }) {
+function LiveSection({
+  onOpen,
+  onStatus,
+  onSubtaskStatus
+}: {
+  onOpen: (taskId: string) => void
+  onStatus: (taskId: string, status: Status) => void
+  onSubtaskStatus: (subtaskId: string, title: string, status: Status) => void
+}) {
   const { sessions } = useLiveBoard()
-  const shown = sessions.filter((s) => s.state !== 'idle' || (s.item && s.item.status !== 'done'))
+  const shown = sessions.filter(
+    (s): s is LiveSession & { item: LiveItem } => s.item !== null && (s.state !== 'idle' || s.item.status !== 'done')
+  )
   if (shown.length === 0) return null
   return (
     <section className="line-note-section line-live">
@@ -506,68 +506,66 @@ function LiveSection({ groups, onOpen }: { groups: BindGroup[]; onOpen: (taskId:
         <b>{shown.length}</b>
       </div>
       {shown.map((s) => (
-        <LiveRow key={`${s.agent}:${s.sessionId}`} s={s} groups={groups} onOpen={onOpen} />
+        <LiveRow
+          key={`${s.agent}:${s.sessionId}`}
+          s={s}
+          onOpen={onOpen}
+          onStatus={(status) => (s.item.kind === 'task' ? onStatus(s.item.id, status) : onSubtaskStatus(s.item.id, nameOf(s.item), status))}
+        />
       ))}
     </section>
   )
 }
 
-function LiveRow({ s, groups, onOpen }: { s: LiveSession; groups: BindGroup[]; onOpen: (taskId: string) => void }) {
+/** S2 写接口；整个任务就是任务名 */
+function nameOf(item: LiveItem): string {
+  return item.label ? `${item.label} ${item.title}` : item.title
+}
+
+function LiveRow({
+  s,
+  onOpen,
+  onStatus
+}: {
+  s: LiveSession & { item: LiveItem }
+  onOpen: (taskId: string) => void
+  onStatus: (status: Status) => void
+}) {
   const { item } = s
-  const who = `${AGENT_BY_ID[s.agent].name} ${LIVE_LABEL[s.state]}`
-  const where = s.folder ? `${s.folder} · ` : ''
+  const name = nameOf(item)
+  const { setNodeRef, attributes, listeners, isDragging: dragging } = useDraggable({
+    id: `live:${s.agent}:${s.sessionId}`,
+    data: {
+      taskId: item.taskId,
+      subtaskId: item.kind === 'subtask' ? item.id : undefined,
+      title: name,
+      color: item.color,
+      dragOut: { text: item.prompt, slip: { title: name, color: item.color } }
+    } satisfies Dragged
+  })
   return (
-    <div className="line-live-row">
-      <div
-        className={cx('line-live-item', item ? 'known' : 'unknown')}
-        style={{ '--c': item?.color ?? 'transparent' } as CSSProperties}
-        title={
-          item
-            ? `${who}\n${item.taskTitle}${item.label ? ` / ${item.label} ${item.title}` : ''}\n点一下打开 · 右击改状态或解绑`
-            : `${who}\n${where}${s.snippet}\n还没认出是哪个任务，可以在下面归到一个任务`
-        }
-        onClick={item ? () => onOpen(item.taskId) : undefined}
-        onContextMenu={
-          item
-            ? (e) =>
-                openStatusMenu(e, {
-                  title: item.label ? `${item.label} ${item.title}` : item.title,
-                  value: item.status,
-                  onChange: (status) =>
-                    item.kind === 'task' ? api.updateTask(item.id, { status }) : api.updateSubtask(item.id, { status }),
-                  actions: [
-                    { label: '在侧边栏打开', onClick: () => onOpen(item.taskId) },
-                    { label: '不算这一项（解绑）', onClick: () => api.bindLiveSession(s.agent, s.sessionId, '') }
-                  ]
-                })
-            : undefined
-        }
-      >
-        <AgentIcon agent={s.agent} size={14} busy={s.state === 'running'} live={s.state} />
-        <span className="line-note-title">
-          {item ? `${item.label ? `${item.label} ` : ''}${item.title}` : `${where}${s.snippet || '新会话'}`}
-        </span>
-      </div>
-      {!item && (
-        <select
-          className="line-live-bind"
-          value=""
-          onChange={(e) => {
-            if (e.target.value) api.bindLiveSession(s.agent, s.sessionId, e.target.value)
-          }}
-        >
-          <option value="">归到…</option>
-          {groups.map((g) => (
-            <optgroup key={g.taskId} label={g.taskTitle}>
-              {g.items.map((i) => (
-                <option key={i.id} value={i.id}>
-                  {i.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-      )}
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      draggable={Boolean(item.prompt) || undefined}
+      className={cx('line-note-item', 'line-live-item', dragging && 'placeholder')}
+      style={{ '--c': item.color } as CSSProperties}
+      title={`${AGENT_BY_ID[s.agent].name} ${LIVE_LABEL[s.state]}\n${item.taskTitle}${item.label ? ` / ${name}` : ''}\n点一下打开 · 拖到便签的一栏或绳子上改状态 · 右击改状态${item.prompt ? ' · 拖到 AI 的输入框粘贴提示词' : ''}`}
+      onClick={() => {
+        if (!isDragging()) onOpen(item.taskId)
+      }}
+      onContextMenu={(e) =>
+        openStatusMenu(e, {
+          title: name,
+          value: item.status,
+          onChange: onStatus,
+          actions: [{ label: '在侧边栏打开', onClick: () => onOpen(item.taskId) }]
+        })
+      }
+    >
+      <AgentIcon agent={s.agent} size={14} busy={s.state === 'running'} live={s.state} />
+      <span className="line-note-title">{name}</span>
     </div>
   )
 }

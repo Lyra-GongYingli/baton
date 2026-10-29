@@ -94,11 +94,11 @@ CREATE TABLE IF NOT EXISTS logs (
   created_at INTEGER NOT NULL
 );
 
--- Claude Code、Codex 通过 hooks 报上来的会话：这会儿在干嘛、认出来在做哪一项。存下来，Baton 重启后还认得
+-- Claude Code、Codex 通过 hooks 报上来的会话：这会儿在干嘛、在做哪一项。存下来，Baton 重启后还认得
 CREATE TABLE IF NOT EXISTS agent_sessions (
   agent      TEXT NOT NULL,
   session_id TEXT NOT NULL,
-  item_id    TEXT NOT NULL DEFAULT '', -- 认出来的任务 / 子任务 / 子子任务；空 = 还没认出来
+  item_id    TEXT NOT NULL DEFAULT '', -- 在做的任务 / 子任务 / 子子任务；空 = 还没说过话
   state      TEXT NOT NULL DEFAULT 'idle', -- running / waiting / idle
   cwd        TEXT NOT NULL DEFAULT '',
   snippet    TEXT NOT NULL DEFAULT '', -- 第一句话的开头
@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   pid_ok     INTEGER NOT NULL DEFAULT 0, -- 连着两次报的是同一个 pid，才拿它判断会话还在不在
   started_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  ended_at   INTEGER NOT NULL DEFAULT 0, -- 会话关掉的时间，0 = 还开着。关掉的留一阵，接着用（resume）时还归到原来那一项
   PRIMARY KEY (agent, session_id)
 );
 `
@@ -228,6 +229,10 @@ function addMissingColumns(): void {
     db.exec('ALTER TABLE subtasks ADD COLUMN done_at INTEGER NOT NULL DEFAULT 0')
     // 以前完成的没有记时间，拿最后修改时间凑合
     db.exec("UPDATE subtasks SET done_at = updated_at WHERE status = 'done'")
+  }
+
+  if (!columns('agent_sessions').includes('ended_at')) {
+    db.exec('ALTER TABLE agent_sessions ADD COLUMN ended_at INTEGER NOT NULL DEFAULT 0')
   }
 }
 
@@ -435,6 +440,16 @@ export function updateProject(id: string, patch: Partial<Pick<Project, 'title' |
 export function deleteProject(id: string): void {
   db.prepare('DELETE FROM tasks WHERE project_id = ?').run(id)
   db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+}
+
+export function projectExists(id: string): boolean {
+  return Boolean(db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id))
+}
+
+/** 按名字找项目，同名的取排在前面的；没有是 null */
+export function projectIdByTitle(title: string): string | null {
+  const r = db.prepare('SELECT id FROM projects WHERE title = ? ORDER BY position, created_at LIMIT 1').get(title) as Row | undefined
+  return r ? (r.id as string) : null
 }
 
 export function reorderProjects(ids: string[]): void {
@@ -893,6 +908,8 @@ export interface AgentSessionRow {
   pidOk: boolean
   startedAt: number
   updatedAt: number
+  /** 关掉的时间，0 = 还开着 */
+  endedAt: number
 }
 
 function toAgentSession(r: Row): AgentSessionRow {
@@ -906,7 +923,8 @@ function toAgentSession(r: Row): AgentSessionRow {
     pid: Number(r.pid),
     pidOk: Boolean(r.pid_ok),
     startedAt: Number(r.started_at),
-    updatedAt: Number(r.updated_at)
+    updatedAt: Number(r.updated_at),
+    endedAt: Number(r.ended_at)
   }
 }
 
@@ -921,12 +939,12 @@ export function getAgentSession(agent: HookAgent, sessionId: string): AgentSessi
 
 export function saveAgentSession(s: AgentSessionRow): void {
   db.prepare(
-    `INSERT INTO agent_sessions (agent, session_id, item_id, state, cwd, snippet, pid, pid_ok, started_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO agent_sessions (agent, session_id, item_id, state, cwd, snippet, pid, pid_ok, started_at, updated_at, ended_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent, session_id) DO UPDATE SET
        item_id = excluded.item_id, state = excluded.state, cwd = excluded.cwd, snippet = excluded.snippet,
-       pid = excluded.pid, pid_ok = excluded.pid_ok, updated_at = excluded.updated_at`
-  ).run(s.agent, s.sessionId, s.itemId, s.state, s.cwd, s.snippet, s.pid, s.pidOk ? 1 : 0, s.startedAt, s.updatedAt)
+       pid = excluded.pid, pid_ok = excluded.pid_ok, updated_at = excluded.updated_at, ended_at = excluded.ended_at`
+  ).run(s.agent, s.sessionId, s.itemId, s.state, s.cwd, s.snippet, s.pid, s.pidOk ? 1 : 0, s.startedAt, s.updatedAt, s.endedAt)
 }
 
 /** 删掉一个会话；真删了返回 true */
@@ -954,16 +972,17 @@ export function itemState(id: string): { kind: 'task' | 'subtask'; status: Statu
   return t ? { kind: 'task', status: t.status as Status, agent: '', parentId: '' } : null
 }
 
-/** 会话列表里怎么写这一项：编号、标题、属于哪个任务；删掉了是 null */
+/** 会话列表里怎么写这一项：编号、标题、属于哪个任务、提示词；删掉了是 null */
 export function liveItem(id: string): LiveItem | null {
-  const sub = db.prepare('SELECT task_id, parent_id, ref, title, status FROM subtasks WHERE id = ?').get(id) as Row | undefined
+  const sub = db.prepare('SELECT task_id, parent_id, ref, title, status, prompt FROM subtasks WHERE id = ?').get(id) as Row | undefined
   const taskId = sub ? (sub.task_id as string) : id
-  const t = db
-    .prepare('SELECT t.title, t.status, p.color FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?')
+  const row = db
+    .prepare('SELECT t.*, p.color FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?')
     .get(taskId) as Row | undefined
-  if (!t) return null
-  const base = { id, taskId, taskTitle: t.title as string, color: (t.color as string) || '#9CA3AF' }
-  if (!sub) return { ...base, kind: 'task', label: '', title: t.title as string, status: t.status as Status }
+  if (!row) return null
+  const t = toTask(row)
+  const base = { id, taskId, taskTitle: t.title, color: (row.color as string) || '#9CA3AF' }
+  if (!sub) return { ...base, kind: 'task', label: '', title: t.title, status: t.status, prompt: t.prompt ? expandPrompt(t.prompt, t) : '' }
   let label = `S${sub.ref}`
   if (sub.parent_id) {
     // 子子任务的编号是在上级子任务里的顺序，和界面上一样现算
@@ -973,5 +992,6 @@ export function liveItem(id: string): LiveItem | null {
     ).map((r) => r.id)
     label = `S${parent ? Number(parent.ref) : '?'}.${siblings.indexOf(id) + 1}`
   }
-  return { ...base, kind: 'subtask', label, title: sub.title as string, status: sub.status as Status }
+  const prompt = sub.prompt ? expandPrompt(String(sub.prompt), t) : ''
+  return { ...base, kind: 'subtask', label, title: sub.title as string, status: sub.status as Status, prompt }
 }

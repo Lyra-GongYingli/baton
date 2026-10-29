@@ -1,13 +1,15 @@
 import { basename } from 'node:path'
 import { AGENT_BY_ID } from '../shared/agents'
+import { titleFromText } from '../shared/prompt'
 import type { Assignee, HookAgent, LiveBoard, Status } from '../shared/types'
 import * as db from './db'
 
 // AI 在跑什么：Claude Code、Codex 通过 hooks 把每个会话的动静报给 Baton（怎么接的见 agentHooks.ts）。
-// 会话发出去的话里认出 Baton 的提示词，就把这个会话归到那个任务 / 子任务 / 子子任务上：
+// 会话发出去的话里认出 Baton 的提示词，就把这个会话归到那个任务 / 子任务 / 子子任务上；
+// 第一句话就认不出来的，在 AI 任务的项目里新建一个任务（带一个交给这个 AI 的同名子任务），和手动建的任务一样用：
 //   开始跑 → 那一项是待办或已暂停的，改成进行中；子任务的执行者换成这个 AI
 //   停下来等你批准、这一轮跑完 → 只在头像上提示，不会自动标成完成（AI 停下不等于做完了）
-// 会话存在数据库里，Baton 重启后还认得；关掉的会话过一会儿自己消失。
+// 会话存在数据库里，Baton 重启后还认得；关掉的会话从列表里消失，但记一个月，接着用（resume）时还归到原来那一项。
 
 /** hooks 发来的 JSON：Claude Code 和 Codex 的字段名一样，这里只取用得上的 */
 export interface HookPayload {
@@ -27,33 +29,56 @@ interface Callbacks {
   onData: () => void
   /** 冒一条提示 */
   onNotice: (text: string) => void
+  /** 认不出来的会话新建任务时放进哪个项目（还没有就当场建一个），返回项目 id */
+  taskProject: () => string
 }
 
-let cb: Callbacks = { onLive: () => {}, onData: () => {}, onNotice: () => {} }
+let cb: Callbacks = { onLive: () => {}, onData: () => {}, onNotice: () => {}, taskProject: () => '' }
 
 /** 在跑的会话这么久没动静（比如被你中途打断了，收不到「停下」），就当它停了 */
 const RUNNING_QUIET = 30 * 60_000
-/** 这么久没动静的会话就忘掉 */
-const FORGET = 12 * 3600_000
+/** 这么久没动静的会话，当它已经关了 */
+const QUIET_END = 12 * 3600_000
+/** 关掉的会话记这么久，这期间接着用（resume）还归到原来那一项 */
+const KEEP = 30 * 24 * 3600_000
 
 export function startLive(callbacks: Callbacks): void {
   cb = callbacks
   sweep()
+  // 以前认不出来、一直空着的会话（这个功能之前开的）：拿第一句话的开头补建任务
+  for (const s of db.listAgentSessions()) {
+    if (s.endedAt || s.itemId || !s.snippet) continue
+    const itemId = newTask(s.agent, titleFromText(s.snippet))
+    db.saveAgentSession({ ...s, itemId })
+    claim(itemId, s.agent, true)
+    cb.onData()
+    cb.onLive()
+  }
   setInterval(sweep, 60_000)
 }
 
 export function handleHook(agent: HookAgent, p: HookPayload, pid: number): void {
   const sessionId = p.session_id
   if (!sessionId) return
-  if (p.hook_event_name === 'SessionEnd') {
-    if (db.deleteAgentSession(agent, sessionId)) cb.onLive()
-    return
-  }
   const now = Date.now()
   const old = db.getAgentSession(agent, sessionId)
+  if (p.hook_event_name === 'SessionEnd') {
+    // 关掉的会话先留着：接着用的时候还认得在做哪一项
+    if (old && !old.endedAt) {
+      db.saveAgentSession({ ...old, state: 'idle', updatedAt: now, endedAt: now })
+      cb.onLive()
+    }
+    return
+  }
   const s: db.AgentSessionRow = old
     ? { ...old, updatedAt: now }
-    : { agent, sessionId, itemId: '', state: 'idle', cwd: '', snippet: '', pid: 0, pidOk: false, startedAt: now, updatedAt: now }
+    : { agent, sessionId, itemId: '', state: 'idle', cwd: '', snippet: '', pid: 0, pidOk: false, startedAt: now, updatedAt: now, endedAt: 0 }
+  if (s.endedAt) {
+    // 关掉的会话又有动静（接着用了）：重新算开着，进程也换了
+    s.endedAt = 0
+    s.pid = 0
+    s.pidOk = false
+  }
   if (p.cwd) s.cwd = p.cwd
   if (pid > 0) {
     s.pidOk = pid === s.pid
@@ -61,6 +86,7 @@ export function handleHook(agent: HookAgent, p: HookPayload, pid: number): void 
   }
 
   let started = false
+  let created = false
   switch (p.hook_event_name) {
     case 'UserPromptSubmit': {
       // 子代理之间传的话不是你发的，不拿来认
@@ -73,6 +99,10 @@ export function handleHook(agent: HookAgent, p: HookPayload, pid: number): void 
       if (hit && hit !== s.itemId) {
         s.itemId = hit
         announce(agent, hit)
+      } else if (!hit && !s.itemId && prompt.trim()) {
+        // 认不出来，这个会话也还没在做哪一项：给它建一个任务。建过的被你删了，就不再建
+        s.itemId = newTask(agent, titleFromText(prompt))
+        created = true
       }
       break
     }
@@ -93,23 +123,15 @@ export function handleHook(agent: HookAgent, p: HookPayload, pid: number): void 
   }
 
   db.saveAgentSession(s)
-  if (started && s.itemId && claim(s.itemId, agent, true)) cb.onData()
-  if (!old || old.state !== s.state || old.itemId !== s.itemId) cb.onLive()
-}
-
-/** 手动把会话归到某一项上（itemId 空字符串 = 解绑）。执行者换成这个 AI；正在跑的话，那一项跟着改成进行中 */
-export function bindSession(agent: HookAgent, sessionId: string, itemId: string): void {
-  const s = db.getAgentSession(agent, sessionId)
-  if (!s || s.itemId === itemId) return
-  db.saveAgentSession({ ...s, itemId })
-  if (itemId && claim(itemId, agent, s.state !== 'idle')) cb.onData()
-  cb.onLive()
+  if ((started && s.itemId && claim(s.itemId, agent, true)) || created) cb.onData()
+  if (!old || old.endedAt || old.state !== s.state || old.itemId !== s.itemId) cb.onLive()
 }
 
 export function liveBoard(enabled: LiveBoard['enabled']): LiveBoard {
   return {
     enabled,
-    sessions: db.listAgentSessions().map((s) => ({
+    // 关掉的会话只是记着，不列出来
+    sessions: db.listAgentSessions().filter((s) => !s.endedAt).map((s) => ({
       agent: s.agent,
       sessionId: s.sessionId,
       state: s.state,
@@ -182,6 +204,18 @@ function claim(itemId: string, agent: HookAgent, start: boolean): boolean {
   return true
 }
 
+/**
+ * 认不出来的会话：在 AI 任务的项目里新建一个任务，带一个同名的子任务交给这个 AI（和手动建的一样，什么都能改）。
+ * 返回子任务 id，会话就归到它上面
+ */
+function newTask(agent: HookAgent, title: string): string {
+  const taskId = db.createTask({ projectId: cb.taskProject(), title })
+  const subId = db.createSubtask(taskId, { title, agent })
+  const project = db.getTask(taskId)?.project.title ?? ''
+  cb.onNotice(`新任务：${AGENT_BY_ID[agent].name} 在做「${title}」，放在「${project}」里`)
+  return subId
+}
+
 function announce(agent: HookAgent, itemId: string): void {
   const item = db.liveItem(itemId)
   if (!item) return
@@ -201,13 +235,15 @@ function alive(pid: number): boolean {
   }
 }
 
-/** 每分钟看一遍：进程没了的、很久没动静的会话忘掉；跑着跑着没了动静的，当它停了 */
+/** 每分钟看一遍：进程没了的、很久没动静的会话当它关了；关了一个月的忘掉；跑着跑着没了动静的，当它停了 */
 function sweep(): void {
   const now = Date.now()
   let changed = false
   for (const s of db.listAgentSessions()) {
-    if ((s.pidOk && !alive(s.pid)) || now - s.updatedAt > FORGET) {
-      db.deleteAgentSession(s.agent, s.sessionId)
+    if (s.endedAt) {
+      if (now - s.endedAt > KEEP) db.deleteAgentSession(s.agent, s.sessionId)
+    } else if ((s.pidOk && !alive(s.pid)) || now - s.updatedAt > QUIET_END) {
+      db.saveAgentSession({ ...s, state: 'idle', endedAt: now })
       changed = true
     } else if (s.state === 'running' && now - s.updatedAt > RUNNING_QUIET) {
       db.saveAgentSession({ ...s, state: 'idle' })

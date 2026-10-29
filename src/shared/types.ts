@@ -210,6 +210,8 @@ export interface PublicSettings {
   dataDir: string
   shortcuts: { dock: string }
   dock: DockSettings
+  /** 认不出是哪个任务的 AI 会话，自动建的任务放进哪个项目；还没有（第一次用到时才建「AI 任务」）是 null */
+  aiProjectId: string | null
   /** 让 Claude Code 等 AI 工具操控 Baton 的本机 MCP 服务 */
   mcp: { url: string; token: string; running: boolean; error: string | null }
 }
@@ -241,15 +243,17 @@ export interface LiveItem {
   status: Status
   taskTitle: string
   color: string
+  /** 这一项的提示词（占位符已替换），拖到 AI 的输入框时带上；没填是空字符串 */
+  prompt: string
 }
 
 export interface LiveSession {
   agent: HookAgent
   sessionId: string
   state: LiveState
-  /** 认出来在做哪一项；没认出来是 null */
+  /** 在做哪一项：认出来的，或者认不出来时自动建的任务；还没说过话、那一项被删掉了是 null */
   item: LiveItem | null
-  /** 工作目录的最后一段，没认出来时靠它和第一句话分辨是哪个会话 */
+  /** 工作目录的最后一段 */
   folder: string
   /** 这个会话第一句话的开头 */
   snippet: string
@@ -352,8 +356,8 @@ export interface BatonApi {
 
   /** 正在跑的 AI 会话（Claude Code、Codex 通过 hooks 告诉 Baton 的） */
   liveBoard(): Promise<LiveBoard>
-  /** 把一个会话归到某个任务 / 子任务 / 子子任务上；itemId 是空字符串就是解绑 */
-  bindLiveSession(agent: HookAgent, sessionId: string, itemId: string): Promise<void>
+  /** 认不出是哪个任务的 AI 会话，自动建的任务放进哪个项目 */
+  setAiProject(projectId: string): Promise<void>
   /** Claude Code、Codex 有没有接入自动检测 */
   agentHooksStatus(): Promise<AgentHooksState[]>
   /** 接入：把 Baton 的 hooks 写进它的配置文件（别人的 hooks 原样留着） */

@@ -1,8 +1,9 @@
 import { useEffect, type CSSProperties } from 'react'
+import { titleFromText } from '../../../shared/prompt'
 import { api, useData } from '../api'
 import { TaskBody } from '../board/TaskBody'
 import { TaskStatusPicker } from '../components/StatusPicker'
-import { cx, titleFromText } from '../util'
+import { cx } from '../util'
 import { Icon, toast, useDropTarget } from './parts'
 
 /** 侧边栏里的任务：一个子任务 list，每一行填提示词 */

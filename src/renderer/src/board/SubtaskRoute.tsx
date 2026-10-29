@@ -4,7 +4,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { useEffect, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { nextStatus } from '../../../shared/agents'
-import { expandPrompt, previousOf } from '../../../shared/prompt'
+import { expandPrompt, previousOf, titleFromText } from '../../../shared/prompt'
 import { STATUS_LABEL, type Subtask, type TaskDetail } from '../../../shared/types'
 import { api } from '../api'
 import { AgentPicker } from '../components/AgentPicker'
@@ -17,7 +17,7 @@ import { openStatusMenu } from '../components/StatusMenu'
 import { StatusPicker } from '../components/StatusPicker'
 import { toast, useDropTarget } from '../dock/parts'
 import { busyOf, LiveMark, ownLive, shownState, useLiveBoard, useLiveOf } from '../live'
-import { cx, titleFromText } from '../util'
+import { cx } from '../util'
 
 // 子任务 list：子任务和它下面的子子任务排成一棵两层的树。
 //   接力子任务（chained）——和上一个用实线连着，圆形节点，上一个完成后才轮到它
