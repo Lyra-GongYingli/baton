@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { STATUS_LABEL, STATUS_ORDER, type Status } from '../../../shared/types'
 import { api } from '../api'
 import { cx } from '../util'
+import { PopMenu } from './PopMenu'
 
 /** 状态的小图形：待办 空心圈 / 进行中 跳动的实心点 / 已暂停 两道竖线 / 已完成 对勾 */
 export function StatusGlyph({ status }: { status: Status }) {
@@ -23,47 +24,43 @@ export function StatusPicker({
   small?: boolean
   title?: string
 }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const close = (e: MouseEvent): void => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
-    }
-    window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
-  }, [open])
+  // 点开时量一下标签的位置，菜单贴着它弹出
+  const [anchor, setAnchor] = useState<DOMRect | null>(null)
+  const box = useRef<HTMLDivElement>(null)
 
   return (
     <div
+      ref={box}
       className={cx('task-status', small && 'small')}
-      ref={ref}
       // 不要触发卡片的打开、拖动、就地编辑
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <button className={cx('task-status-chip', `t-${value}`)} title={title} onClick={() => setOpen(!open)}>
+      <button
+        className={cx('task-status-chip', `t-${value}`)}
+        title={title}
+        onClick={(e) => setAnchor(anchor ? null : e.currentTarget.getBoundingClientRect())}
+      >
         <StatusGlyph status={value} />
         {STATUS_LABEL[value]}
       </button>
-      {open && (
-        <div className="agent-menu align-right">
+      {anchor && (
+        <PopMenu anchor={anchor} owner={box} align="right" className="status-menu" onClose={() => setAnchor(null)}>
           {STATUS_ORDER.map((s) => (
             <button
               key={s}
               className={cx('agent-option', `t-${s}`, s === value && 'active')}
               onClick={() => {
                 if (s !== value) onChange(s)
-                setOpen(false)
+                setAnchor(null)
               }}
             >
               <StatusGlyph status={s} />
               {STATUS_LABEL[s]}
             </button>
           ))}
-        </div>
+        </PopMenu>
       )}
     </div>
   )

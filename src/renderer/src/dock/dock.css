@@ -1711,6 +1711,12 @@ button:hover .mini-card.c {
   left: 0;
   transform-origin: top left;
 }
+/* 放在 body 下面的那种（见 PopMenu）：按算好的位置摆，盖在所有卡片上面 */
+.agent-menu.pop-menu {
+  position: fixed;
+  right: auto;
+  z-index: 2000;
+}
 .agent-option {
   display: flex;
   align-items: center;
@@ -2281,10 +2287,10 @@ button.child-check:hover {
 .t-done {
   --tc: var(--c-done);
 }
-.task-status .agent-menu {
+.agent-menu.status-menu {
   min-width: 110px;
 }
-.task-status .agent-option {
+.status-menu .agent-option {
   padding: 5px 8px;
   font-size: 12.5px;
 }
