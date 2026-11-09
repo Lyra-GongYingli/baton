@@ -16,7 +16,7 @@ import { INTERNAL_DRAG, toast } from '../dock/parts'
 
 // 拖拽排序：鼠标按住移动 6px 以上才算拖，普通点击不受影响。
 // 不开键盘拖动：行里有输入框，按回车会被当成「开始拖动」。
-// 带着提示词的任务卡（元素上有 draggable）走浏览器自己的拖放：在 Baton 里照样排序、改状态，
+// 带着提示词的任务卡、卡上的一行子任务（元素上有 draggable）走浏览器自己的拖放：在 Baton 里照样排序、改状态、挪到别的任务，
 // 拖出窗口丢进 ChatGPT / Claude 等别的软件的输入框，就把提示词粘进去。
 
 export function useDndSensors() {
@@ -139,26 +139,6 @@ class DragOutSensor implements SensorInstance {
     if (this.dropped && this.inside && this.started) this.props.onEnd()
     else this.props.onCancel()
     if (!this.dropped && e.dataTransfer && e.dataTransfer.dropEffect !== 'none') toast('✓ 提示词送过去了')
-  }
-}
-
-/**
- * 只往外拖提示词、不参与排序的元素（比如任务卡上的一行子任务）：按住拖进别的软件的输入框，松手粘贴。
- * 拦住冒泡，外面的卡片不会跟着被拖走（按在 draggable 上时 CardPointerSensor 本来就让开）
- */
-export function promptDrag(text: string, slip?: DragOut['slip']) {
-  return {
-    draggable: true,
-    onDragStart: (e: ReactDragEvent) => {
-      e.stopPropagation()
-      e.dataTransfer.setData('text/plain', text)
-      e.dataTransfer.setData(INTERNAL_DRAG, '1')
-      e.dataTransfer.effectAllowed = 'copy'
-      if (slip) setSlipImage(e.dataTransfer, slip)
-    },
-    onDragEnd: (e: ReactDragEvent) => {
-      if (e.dataTransfer.dropEffect !== 'none') toast('✓ 提示词送过去了')
-    }
   }
 }
 

@@ -327,12 +327,22 @@ body.route-handle {
   align-items: flex-start;
   gap: 5px;
 }
-/* 填了提示词的行可以按住拖进 AI 的输入框 */
-.tcard-sub-row.has-prompt {
+/* 每一行都能按住拖到别的任务卡片上；填了提示词的还能拖进 AI 的输入框 */
+.tcard-sub-row.movable {
   cursor: grab;
 }
-.tcard-sub-row.has-prompt:active {
+.tcard-sub-row.movable:active {
   cursor: grabbing;
+}
+/* 正被拖着的那一行（连同跟着走的子子任务）变淡 */
+.tcard-sub.lifted {
+  opacity: 0.35;
+}
+/* 别的卡片上的子任务拖过来：停在哪个子任务那一块上（连同它的子子任务），那一块亮起来，松手就当它的子子任务 */
+.tcard-sub.cross-over {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--c) 16%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 16%, transparent);
 }
 /* 状态点：点一下换到下一个状态，按钮比图形大一圈好点中 */
 .tcard-sub-node {
@@ -407,6 +417,20 @@ body.route-handle {
   transform: rotate(0) scale(1.03);
   outline: 2.5px dashed var(--c);
   outline-offset: 3px;
+}
+/* 别的卡片上的子任务拖过来：这张卡片描一圈虚线。不放大，免得落点和看到的错开 */
+.tcard.cross-over {
+  outline: 2.5px dashed var(--c);
+  outline-offset: 3px;
+}
+/* 拖着卡片上的一行时，卡片不跟着鼠标浮起来：落点是开始拖的时候量好的。
+   标题悬停的底色也先不显示，免得看着像「放进这个子任务」的高亮 */
+.projects.moving-sub .tcard:hover {
+  transform: rotate(var(--tilt));
+  box-shadow: var(--card-shadow);
+}
+.projects.moving-sub .copyable:hover {
+  background: none;
 }
 .tcard-drop,
 .dtask-drop,
@@ -2382,6 +2406,10 @@ button.child-check:hover {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 任务卡上拖一行时的小纸条：挂在鼠标下面，不比原来那一行宽 */
+.tree-preview.sub-slip {
+  max-width: 100%;
 }
 .tree-preview-hint {
   flex: none;

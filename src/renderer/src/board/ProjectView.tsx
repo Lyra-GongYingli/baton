@@ -2,26 +2,47 @@ import {
   DndContext,
   DragOverlay,
   closestCorners,
+  pointerWithin,
   useDroppable,
+  type Active,
   type CollisionDetection,
-  type DragOverEvent
+  type DragOverEvent,
+  type Modifier,
+  type Over
 } from '@dnd-kit/core'
 import { SortableContext, arrayMove, rectSortingStrategy, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { getEventCoordinates } from '@dnd-kit/utilities'
 import { useEffect, useState, type CSSProperties } from 'react'
 import { THREAD_COLORS } from '../../../shared/colors'
 import type { ProjectTree, TaskSummary } from '../../../shared/types'
 import { api } from '../api'
+import { setCrossTarget, useCrossTarget, type CrossTarget } from '../components/crossDrop'
 import { InlineEdit } from '../components/InlineEdit'
 import { markDragging, useDndSensors, useSortableHandle } from '../components/Sortable'
-import { Icon } from '../dock/parts'
+import { Icon, toast } from '../dock/parts'
 import { cx } from '../util'
-import { cardPrompt, TaskCard } from './TaskCard'
+import { cardPrompt, SUB, SUB_SPOT, TaskCard, type SubDrag, type SubSpot } from './TaskCard'
 
-// 项目视图：项目 → 任务卡。项目可以拖动排序，任务可以在项目内、跨项目拖动
+// 项目视图：项目 → 任务卡。项目可以拖动排序，任务可以在项目内、跨项目拖动。
+// 任务卡上的子任务、子子任务可以按住拖到别的任务卡片上（和晾衣绳上一样）：停在那张卡片的某个子任务上松手 = 当它的子子任务，
+// 停在卡片别处 = 当那个任务的子任务、排在最后；带着子子任务的只能当子任务。停在自己那张卡片上松手什么也不变。
 
 const P = 'p:'
 const T = 't:'
 const DROP = 'drop:'
+
+/** 按住的是任务卡上的一行子任务 / 子子任务：它的信息 */
+function subOf(active: Active): SubDrag | null {
+  if (!String(active.id).startsWith(SUB)) return null
+  return (active.data.current as { sub?: SubDrag } | undefined)?.sub ?? null
+}
+
+/** 拖卡片上的一行时，跟手的小纸条放在鼠标下面一点，不挡住鼠标停着的那一行 */
+const belowPointer: Modifier = ({ activatorEvent, draggingNodeRect, transform }) => {
+  const p = activatorEvent && getEventCoordinates(activatorEvent)
+  if (!p || !draggingNodeRect) return transform
+  return { ...transform, y: transform.y + p.y - draggingNodeRect.top + 18 }
+}
 
 type Columns = Record<string, string[]>
 
@@ -55,6 +76,8 @@ export function ProjectView({
   const [active, setActive] = useState<string | null>(null)
   // 带着提示词的卡走浏览器的拖放，跟着鼠标的是浏览器画的影子，自己的那张就不画了
   const [nativeDrag, setNativeDrag] = useState(false)
+  // 按住卡片上的一行拖动时是它。松手后留到下一次开始拖：松手那一下还要靠它决定小纸条直接消失、不飘回原处
+  const [sub, setSub] = useState<SubDrag | null>(null)
   const [collapsed, setCollapsed] = useState(loadCollapsed)
   const [newProject, setNewProject] = useState<string | null>(null)
 
@@ -79,8 +102,20 @@ export function ProjectView({
   const projectOfTask = (taskId: string): string | undefined =>
     Object.keys(columns).find((pid) => columns[pid].includes(taskId))
 
-  // 拖项目时只和项目比较位置；拖任务时只和任务、项目的空白区比较
+  // 拖项目时只和项目比较位置；拖任务时只和任务、项目的空白区比较；
+  // 拖卡片上的一行时看鼠标停在哪张任务卡片、哪个子任务那一块上（子任务那一块优先）
   const collision: CollisionDetection = (args) => {
+    if (String(args.active.id).startsWith(SUB)) {
+      const hits = pointerWithin({
+        ...args,
+        droppableContainers: args.droppableContainers.filter((c) => {
+          const id = String(c.id)
+          return id.startsWith(SUB_SPOT) || id.startsWith(T)
+        })
+      })
+      const spot = (h: { id: unknown }): boolean => String(h.id).startsWith(SUB_SPOT)
+      return [...hits.filter(spot), ...hits.filter((h) => !spot(h))]
+    }
     const draggingProject = String(args.active.id).startsWith(P)
     return closestCorners({
       ...args,
@@ -91,7 +126,25 @@ export function ProjectView({
     })
   }
 
+  /** 拖着卡片上的一行停在 over 上，松手会挪到哪；停在自己那张卡片上不算 */
+  const crossOf = (s: SubDrag, over: Over | null): CrossTarget | null => {
+    if (!over) return null
+    const id = String(over.id)
+    const spot = id.startsWith(SUB_SPOT) ? (over.data.current as SubSpot) : null
+    const taskId = spot ? spot.taskId : id.startsWith(T) ? id.slice(T.length) : ''
+    const task = tasks.get(taskId)
+    if (!task || taskId === s.taskId) return null
+    // 带着子子任务的只能当子任务（最多两层）
+    if (spot && s.children === 0) return { taskId, title: task.title, parentId: id.slice(SUB_SPOT.length), label: spot.label }
+    return { taskId, title: task.title, parentId: '', label: '' }
+  }
+
   const onDragOver = ({ active: a, over }: DragOverEvent): void => {
+    const s = subOf(a)
+    if (s) {
+      setCrossTarget(crossOf(s, over))
+      return
+    }
     if (!over || !String(a.id).startsWith(T)) return
     const taskId = String(a.id).slice(T.length)
     const overId = String(over.id)
@@ -114,17 +167,29 @@ export function ProjectView({
       onDragStart={({ active: a, activatorEvent }) => {
         markDragging(true)
         setActive(String(a.id))
+        setSub(subOf(a))
         setNativeDrag(activatorEvent?.type === 'dragstart')
       }}
       onDragCancel={() => {
         markDragging(false)
         setActive(null)
+        setCrossTarget(null)
         setColumns(columnsOf(trees))
       }}
       onDragOver={onDragOver}
       onDragEnd={({ active: a, over }) => {
         markDragging(false)
         setActive(null)
+        const s = subOf(a)
+        if (s) {
+          setCrossTarget(null)
+          const target = crossOf(s, over)
+          if (target) {
+            api.moveSubtask(s.id, target.taskId, target.parentId)
+            toast(`✓ 挪到「${target.title}」${target.parentId ? `的 ${target.label} 下面` : ''}`)
+          }
+          return
+        }
         const id = String(a.id)
         if (id.startsWith(P)) {
           if (!over || over.id === a.id) return
@@ -150,7 +215,7 @@ export function ProjectView({
       }}
     >
       <SortableContext items={projectOrder.map((id) => P + id)} strategy={verticalListSortingStrategy}>
-        <div className={cx('projects', wide && 'wide')}>
+        <div className={cx('projects', wide && 'wide', active?.startsWith(SUB) && 'moving-sub')}>
           {projectOrder.map((pid) => {
             const tree = projects.get(pid)
             if (!tree) return null
@@ -192,14 +257,43 @@ export function ProjectView({
         />
       )}
 
-      <DragOverlay dropAnimation={{ duration: 220, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.2)' }}>
+      <DragOverlay
+        // 子任务挪过去以后原来那一行就没了：小纸条松手就消失，不飘回原处
+        dropAnimation={sub ? null : { duration: 220, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.2)' }}
+        modifiers={sub ? [belowPointer] : undefined}
+      >
         {active?.startsWith(T) && tasks.get(active.slice(T.length)) ? (
           <div className={cx('drag-ghost', nativeDrag && 'native')}>
             <TaskCard task={tasks.get(active.slice(T.length))!} index={0} onOpen={() => {}} />
           </div>
+        ) : active?.startsWith(SUB) && sub ? (
+          <SubSlip sub={sub} native={nativeDrag} />
         ) : null}
       </DragOverlay>
     </DndContext>
+  )
+}
+
+/**
+ * 拖卡片上的一行时跟着鼠标的小纸条：拖的是哪一行、松手会挪到哪。
+ * 填了提示词的行走浏览器的拖放，浏览器已经画了写着标题的小纸条，这里只在停到别的卡片上时补一句会挪到哪
+ */
+function SubSlip({ sub, native }: { sub: SubDrag; native: boolean }) {
+  const cross = useCrossTarget()
+  const hint = cross ? `→ 挪到「${cross.title}」${cross.parentId ? `的 ${cross.label} 下面` : ''}` : '→ 拖到别的任务卡片上'
+  if (native && !cross) return null
+  return (
+    <div className="tree-preview sub-slip" style={{ '--c': sub.color } as CSSProperties}>
+      {!native && (
+        <>
+          <span className="ref">{sub.label}</span>
+          {/* 标题太长就截掉，后面「挪到哪」的提示要一直看得见 */}
+          <span className="tree-preview-title">{sub.title}</span>
+          {sub.children > 0 && <span className="muted">＋{sub.children} 个子子任务</span>}
+        </>
+      )}
+      <span className="tree-preview-hint">{hint}</span>
+    </div>
   )
 }
 
