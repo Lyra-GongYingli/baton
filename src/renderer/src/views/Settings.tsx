@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { DockSide } from '../../../shared/types'
+import type { AgentHooksState, DockSide, HookAgent } from '../../../shared/types'
 import { api, useData } from '../api'
 import { cx } from '../util'
 import { toast } from '../dock/parts'
@@ -73,6 +73,8 @@ export function Settings() {
       </section>
 
       <McpSection mcp={settings.mcp} />
+
+      <AgentHooksSection aiProjectId={settings.aiProjectId} onChange={reload} />
 
       <section className="settings-section">
         <h2>数据</h2>
@@ -158,6 +160,93 @@ function McpSection({ mcp }: { mcp: { url: string; token: string; running: boole
       <p className="muted small">
         其他支持 MCP（Streamable HTTP）的工具也能连：地址 {mcp.url}，请求头 Authorization: Bearer 加上面命令里的密钥。
       </p>
+    </section>
+  )
+}
+
+const HOOK_NAMES: Record<HookAgent, string> = { claude: 'Claude Code', codex: 'Codex' }
+
+/** 自动认出 AI 在做哪个任务：把 Baton 的 hooks 接进 Claude Code、Codex；认不出来的会话建成任务放进哪个项目 */
+function AgentHooksSection({ aiProjectId, onChange }: { aiProjectId: string | null; onChange: () => void }) {
+  const [states, setStates] = useState<AgentHooksState[] | null>(null)
+  const [trees] = useData(() => api.listProjects(), [])
+  const [busy, setBusy] = useState<HookAgent | null>(null)
+  const [msg, setMsg] = useState<Partial<Record<HookAgent, string>>>({})
+  useEffect(() => {
+    api.agentHooksStatus().then(setStates)
+  }, [])
+
+  const toggle = async (agent: HookAgent, on: boolean): Promise<void> => {
+    setBusy(agent)
+    const res = on ? await api.connectAgentHooks(agent) : await api.disconnectAgentHooks(agent)
+    setMsg((m) => ({ ...m, [agent]: res.message }))
+    setBusy(null)
+    api.agentHooksStatus().then(setStates)
+  }
+
+  const describe = (s: AgentHooksState): string =>
+    s.status === 'on'
+      ? `已接入（写在 ${s.file}）`
+      : s.status === 'outdated'
+        ? '接过，但地址或密钥变了，点「更新」重新接一次'
+        : s.found
+          ? `还没接入。会写进 ${s.file}，你自己的 hooks 原样留着`
+          : `这台电脑上没找到 ${HOOK_NAMES[s.agent]} 的配置，装好用过一次再来`
+
+  return (
+    <section className="settings-section">
+      <h2>自动认出 AI 在做哪个任务</h2>
+      <p className="muted small">
+        接入以后，Claude Code 和 Codex 每开始一轮、等你批准、跑完一轮，都会告诉 Baton（只发到这台电脑上的 Baton，Baton
+        没开着时什么也不会发生）。从 Baton 拖出去或复制的提示词一发出去，Baton 就认得出是哪个任务：待办的自动变成进行中，头像动起来；等你批准时头像上亮黄点，一轮跑完亮蓝点「等你看」，不会自动标成完成。第一句话认不出是哪个任务的会话，会记成「AI 会话」里的一个子任务，名字用 AI 给会话起的标题，和手动建的子任务一样用。新开的会话生效。
+      </p>
+      {states === null && <div className="setting-row muted small">正在检查…</div>}
+      {states?.map((s) => (
+        <div key={s.agent} className="setting-row">
+          <div>
+            <div className="setting-label">{HOOK_NAMES[s.agent]}</div>
+            <div className="muted small">{describe(s)}</div>
+            {s.problem && <div className="small mcp-msg warn">{s.problem}</div>}
+            {msg[s.agent] && <div className="small mcp-msg">{msg[s.agent]}</div>}
+          </div>
+          <div className="setting-control">
+            {s.status !== 'off' && (
+              <button className="btn small" disabled={busy === s.agent} onClick={() => toggle(s.agent, false)}>
+                断开
+              </button>
+            )}
+            {s.status !== 'on' && s.found && (
+              <button className="btn primary small" disabled={busy === s.agent} onClick={() => toggle(s.agent, true)}>
+                {s.status === 'outdated' ? '更新' : '一键接入'}
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+      <div className="setting-row">
+        <div>
+          <div className="setting-label">认不出来的会话放进</div>
+          <div className="muted small">记成这个项目里「AI 会话」任务的子任务，交给那个 AI；「AI 会话」做完了，下一个会话会另起一个</div>
+        </div>
+        <div className="setting-control">
+          <select
+            className="select"
+            value={aiProjectId ?? ''}
+            onChange={async (e) => {
+              await api.setAiProject(e.target.value)
+              onChange()
+            }}
+          >
+            {/* 还没有的话，第一次用到时才建「AI 任务」 */}
+            {!aiProjectId && <option value="">AI 任务（用到时新建）</option>}
+            {trees?.map(({ project }) => (
+              <option key={project.id} value={project.id}>
+                {project.title}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
     </section>
   )
 }

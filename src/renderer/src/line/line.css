@@ -97,6 +97,19 @@ body.route-line {
   transform: scale(var(--s));
   transform-origin: 50% 0;
 }
+/*
+ * 挂件外面这几层框按没缩小的宽度占地方：卡片一多、整体缩小以后，透明的框会盖住左边那张卡片的右半边，
+ * 鼠标按在那里就落到这层空框上（拖提示词、点状态都没反应，还会被当成空白处、点穿到下面的软件）。
+ * 框本身不接鼠标，只有卡片、便签接
+ */
+.line-swing,
+.line-wiggle,
+.line-scale {
+  pointer-events: none;
+}
+.line-scale > .line-hit {
+  pointer-events: auto;
+}
 
 .line-clip {
   position: absolute;
@@ -138,6 +151,11 @@ body.route-line {
 }
 .line-card.placeholder {
   opacity: 0.35;
+}
+/* 别的卡片上的子任务拖过来：这张卡片描一圈虚线（停在哪个子任务上，那一行也会亮） */
+.line-card.cross-over {
+  outline: 2.5px dashed var(--c);
+  outline-offset: 4px;
 }
 
 .line-task-head {

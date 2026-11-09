@@ -1,6 +1,6 @@
 import { BrowserWindow, screen, type Rectangle } from 'electron'
 import type { LineState } from '../shared/types'
-import { floating, makeFloating, workArea, type Deps } from './dock'
+import { floating, makeFloating, park, parkBounds, workArea, type Deps } from './dock'
 import * as settings from './settings'
 
 // 晾衣绳：屏幕顶部一条透明的置顶窗口，进程视图的卡片一张张夹在绳子上。
@@ -15,6 +15,8 @@ let win: BrowserWindow | null = null
 let open = false
 let pinned = false
 let hideTimer: NodeJS.Timeout | null = null
+/** 收起后停着（见 dock.ts 的 park） */
+let parked = false
 /** 因为失焦收起的时间：点把手上的圆钮时晾衣绳会先失焦收起，紧跟着的那次「切换」不能又把它放下来 */
 let blurClosedAt = 0
 
@@ -41,7 +43,7 @@ export function createLine(deps: Deps): void {
   // 上次固定着就接着挂出来（界面加载好后会用 lineState 取到状态）
   if (pinned) win.once('ready-to-show', () => setLineOpen(true))
 
-  const relayout = (): void => win?.setBounds(bounds())
+  const relayout = (): void => win?.setBounds(parked ? parkBounds() : bounds())
   screen.on('display-metrics-changed', relayout)
   screen.on('display-added', relayout)
   screen.on('display-removed', relayout)
@@ -65,6 +67,8 @@ export function setLineOpen(next: boolean): void {
   win.setIgnoreMouseEvents(true, { forward: true })
   if (next) {
     open = true
+    parked = false
+    win.setFocusable(true)
     win.setBounds(bounds())
     // 固定时只是挂着，不抢走正在用的软件的焦点
     if (pinned) {
@@ -117,7 +121,9 @@ export function finishLineClose(): void {
     clearTimeout(hideTimer)
     hideTimer = null
   }
-  win?.hide()
+  if (!win) return
+  parked = true
+  park(win)
 }
 
 export function setLineInteractive(on: boolean): void {

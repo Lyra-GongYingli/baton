@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { AGENTS } from '../../../shared/agents'
-import type { Assignee } from '../../../shared/types'
+import type { Assignee, LiveState } from '../../../shared/types'
 import { cx } from '../util'
 import { AgentIcon } from './AgentIcon'
+import { PopMenu } from './PopMenu'
 
 /** 点头像弹出执行者列表 */
 export function AgentPicker({
@@ -10,62 +11,46 @@ export function AgentPicker({
   onChange,
   size = 22,
   busy,
+  live,
   align = 'right'
 }: {
   value: Assignee
   onChange: (agent: Assignee) => void
   size?: number
   busy?: boolean
+  live?: LiveState
   align?: 'left' | 'right'
 }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const close = (e: MouseEvent): void => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
-    }
-    window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
-  }, [open])
+  // 点开时量一下头像的位置，菜单贴着它弹出
+  const [anchor, setAnchor] = useState<DOMRect | null>(null)
+  const box = useRef<HTMLDivElement>(null)
+  const pick = (agent: Assignee): void => {
+    onChange(agent)
+    setAnchor(null)
+  }
 
   return (
-    <div
-      className="agent-picker"
-      ref={ref}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button className="agent-picker-btn" title="谁来做？" onClick={() => setOpen(!open)}>
-        <AgentIcon agent={value} size={size} busy={busy} />
+    <div ref={box} className="agent-picker" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+      <button
+        className="agent-picker-btn"
+        title="谁来做？"
+        onClick={(e) => setAnchor(anchor ? null : e.currentTarget.getBoundingClientRect())}
+      >
+        <AgentIcon agent={value} size={size} busy={busy} live={live} />
       </button>
-      {open && (
-        <div className={cx('agent-menu', `align-${align}`)}>
+      {anchor && (
+        <PopMenu anchor={anchor} owner={box} align={align} onClose={() => setAnchor(null)}>
           {AGENTS.map((a) => (
-            <button
-              key={a.id}
-              className={cx('agent-option', value === a.id && 'active')}
-              onClick={() => {
-                onChange(a.id)
-                setOpen(false)
-              }}
-            >
+            <button key={a.id} className={cx('agent-option', value === a.id && 'active')} onClick={() => pick(a.id)}>
               <AgentIcon agent={a.id} size={22} />
               {a.name}
             </button>
           ))}
-          <button
-            className={cx('agent-option', value === '' && 'active')}
-            onClick={() => {
-              onChange('')
-              setOpen(false)
-            }}
-          >
+          <button className={cx('agent-option', value === '' && 'active')} onClick={() => pick('')}>
             <AgentIcon agent="" size={22} />
             未分配
           </button>
-        </div>
+        </PopMenu>
       )}
     </div>
   )

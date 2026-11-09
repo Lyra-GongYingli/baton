@@ -8,6 +8,7 @@ import { Copyable, useDelayedClick } from '../components/Copy'
 import { markDragging, useDndSensors } from '../components/Sortable'
 import { StatusGlyph } from '../components/StatusPicker'
 import { PromptPill, toast } from '../dock/parts'
+import { busyOf, LiveMark, ownLive, shownState, useLiveBoard, useLiveOf } from '../live'
 import { cx } from '../util'
 
 // 进程视图：按状态分成 进行中 / 待办 / 已暂停 / 今天完成 四列。把卡片拖到另一列 = 改成那个状态
@@ -112,6 +113,9 @@ function DraggableCard({ item, status, onOpenTask }: { item: ProcessItem; status
 }
 
 function ProcessCard({ item, status, overlay }: { item: ProcessItem; status: Status; overlay?: boolean }) {
+  const live = useLiveOf(item.subtaskId)
+  const mine = ownLive(live, item.agent)
+  const { enabled } = useLiveBoard()
   return (
     <div className={cx('pcard', `s-${status}`, overlay && 'overlay')} style={{ '--c': item.color } as CSSProperties}>
       <div className="pcard-title">
@@ -127,7 +131,10 @@ function ProcessCard({ item, status, overlay }: { item: ProcessItem; status: Sta
         {item.scheduledOn && (
           <span className={cx('tcard-time', item.scheduledOn < today() && status !== 'done' && 'overdue')}>{dayLabel(item.scheduledOn)}</span>
         )}
-        {item.agent && <AgentIcon agent={item.agent} size={16} busy={status === 'active'} />}
+        {item.agent && (
+          <AgentIcon agent={item.agent} size={16} busy={busyOf(enabled, item.agent, status, mine)} live={shownState(mine, status)} />
+        )}
+        {live && !mine && <LiveMark itemId={item.subtaskId} status={status} size={16} />}
         {item.waitingFor && status !== 'done' && <span className="waiting">🔒 等 S{item.waitingFor}</span>}
       </div>
     </div>

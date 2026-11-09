@@ -11,12 +11,18 @@ import {
 } from '@dnd-kit/core'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from 'react'
+import {
+  useState,
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type FocusEvent as ReactFocusEvent,
+  type PointerEvent as ReactPointerEvent
+} from 'react'
 import { INTERNAL_DRAG, toast } from '../dock/parts'
 
 // 拖拽排序：鼠标按住移动 6px 以上才算拖，普通点击不受影响。
 // 不开键盘拖动：行里有输入框，按回车会被当成「开始拖动」。
-// 带着提示词的任务卡（元素上有 draggable）走浏览器自己的拖放：在 Baton 里照样排序、改状态，
+// 带着提示词的任务卡、卡上的一行子任务（元素上有 draggable）走浏览器自己的拖放：在 Baton 里照样排序、改状态、挪到别的任务，
 // 拖出窗口丢进 ChatGPT / Claude 等别的软件的输入框，就把提示词粘进去。
 
 export function useDndSensors() {
@@ -102,6 +108,7 @@ class DragOutSensor implements SensorInstance {
   private onEnter = (e: DragEvent): void => {
     e.preventDefault()
     clearTimeout(this.leaveTimer)
+    setOutside(false)
   }
 
   private onOver = (e: DragEvent): void => {
@@ -110,6 +117,7 @@ class DragOutSensor implements SensorInstance {
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
     clearTimeout(this.leaveTimer)
     this.inside = true
+    setOutside(false)
     if (this.started) this.props.onMove({ x: e.clientX, y: e.clientY })
   }
 
@@ -118,6 +126,7 @@ class DragOutSensor implements SensorInstance {
     clearTimeout(this.leaveTimer)
     this.leaveTimer = window.setTimeout(() => {
       this.inside = false
+      setOutside(true)
       if (this.started) this.props.onMove(this.origin)
     }, 80)
   }
@@ -136,9 +145,36 @@ class DragOutSensor implements SensorInstance {
     this.source.removeEventListener('dragend', this.onEnd)
     clearTimeout(this.leaveTimer)
     clearTimeout(this.startTimer)
+    setOutside(false)
     if (this.dropped && this.inside && this.started) this.props.onEnd()
     else this.props.onCancel()
     if (!this.dropped && e.dataTransfer && e.dataTransfer.dropEffect !== 'none') toast('✓ 提示词送过去了')
+  }
+}
+
+/** 原生拖放时鼠标出了窗口：body 上做个标记，跟手的「挪到哪」提示先藏起来 */
+function setOutside(on: boolean): void {
+  if (on) document.body.dataset.dragOutside = '1'
+  else delete document.body.dataset.dragOutside
+}
+
+/**
+ * 整行带着提示词、可以原生拖出去时用：行里的输入框正在编辑，就先不让整行拖，
+ * 免得在输入框里按住拖着选字，变成把整行拖走
+ */
+export function useDragUnlessEditing(draggable?: boolean) {
+  const [editing, setEditing] = useState(false)
+  const isField = (t: EventTarget | null): boolean => Boolean((t as Element | null)?.matches?.('input, textarea'))
+  return {
+    draggable: (draggable && !editing) || undefined,
+    onFocus: (e: ReactFocusEvent) => {
+      if (isField(e.target)) setEditing(true)
+    },
+    onBlur: (e: ReactFocusEvent) => {
+      if (isField(e.target)) setEditing(false)
+    },
+    // 输入框没失焦就被拿掉的话，下一次按下时再对一次
+    onPointerDownCapture: (e: ReactPointerEvent) => setEditing(isField(e.target))
   }
 }
 

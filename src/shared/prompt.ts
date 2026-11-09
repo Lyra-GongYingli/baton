@@ -9,6 +9,13 @@ export function referencedSubtasks(prompt: string): number[] {
   return [...refs].sort((a, b) => a - b)
 }
 
+/** 一段文字变成任务 / 子任务时（拖进来的文字、发给 AI 的第一句话），用第一行（文件就用文件名）当标题 */
+export function titleFromText(text: string): string {
+  const first = text.split('\n').find((l) => l.trim())?.trim() ?? '新子任务'
+  const line = first.startsWith('文件：') ? first.slice(3).split('/').pop() || first : first
+  return line.length > 30 ? `${line.slice(0, 30)}…` : line
+}
+
 /** 复制给 AI 的完整提示词 */
 export function expandPrompt(prompt: string, task: Task): string {
   return prompt.replace(/\{\{\s*目标\s*\}\}/g, () => task.goal || '（任务还没写目标）')

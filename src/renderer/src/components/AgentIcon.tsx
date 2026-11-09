@@ -1,9 +1,9 @@
-import type { Assignee } from '../../../shared/types'
+import { LIVE_LABEL, type Assignee, type LiveState } from '../../../shared/types'
 import { AGENT_BY_ID } from '../../../shared/agents'
 import { cx } from '../util'
 
 // 执行者头像：自己画的简化图标，不是官方 logo
-// busy = 正在干活，会有小动画
+// busy = 正在干活，会有小动画；live = 认出来的 AI 会话这会儿的状态，等你批准、等你看时右上角亮个小点
 
 function Claude() {
   const rays = Array.from({ length: 12 }, (_, i) => i * 30)
@@ -83,19 +83,34 @@ function Nobody() {
 
 const ART = { claude: Claude, codex: Codex, muse: Muse, me: Cat }
 
-export function AgentIcon({ agent, size = 24, busy, title }: { agent: Assignee; size?: number; busy?: boolean; title?: string }) {
+export function AgentIcon({
+  agent,
+  size = 24,
+  busy,
+  live,
+  title
+}: {
+  agent: Assignee
+  size?: number
+  busy?: boolean
+  live?: LiveState
+  title?: string
+}) {
   const Art = agent ? ART[agent] : Nobody
+  const name = agent ? AGENT_BY_ID[agent].name : '未分配'
+  const label = title ?? (live ? `${name} · ${LIVE_LABEL[live]}` : name)
   return (
     <svg
-      className={cx('agent-icon', `agent-${agent || 'none'}`, busy && 'busy')}
+      className={cx('agent-icon', `agent-${agent || 'none'}`, busy && 'busy', live && `live-${live}`)}
       width={size}
       height={size}
       viewBox="0 0 32 32"
       role="img"
-      aria-label={title ?? (agent ? AGENT_BY_ID[agent].name : '未分配')}
+      aria-label={label}
     >
-      <title>{title ?? (agent ? AGENT_BY_ID[agent].name : '未分配')}</title>
+      <title>{label}</title>
       <Art />
+      {(live === 'waiting' || live === 'idle') && <circle className="live-dot" cx="28.5" cy="3.5" r="5.5" />}
     </svg>
   )
 }

@@ -4,6 +4,7 @@ import { App } from './App'
 import { DockApp } from './dock/DockApp'
 import { Handle } from './dock/Handle'
 import { LineApp } from './line/LineApp'
+import { LiveProvider } from './live'
 import './styles.css'
 import './dock/dock.css'
 import './line/line.css'
@@ -23,8 +24,15 @@ const screens: Record<string, () => JSX.Element> = {
 }
 const Screen = screens[route] ?? App
 
+// 把手只是一根细条，不用知道 AI 在跑什么
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Screen />
+    {route === 'handle' ? (
+      <Screen />
+    ) : (
+      <LiveProvider>
+        <Screen />
+      </LiveProvider>
+    )}
   </StrictMode>
 )

@@ -3,15 +3,21 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
 import { AGENT_BY_ID } from '../shared/agents'
-import { STATUS_LABEL, type Assignee, type Status, type TaskDetail } from '../shared/types'
+import { STATUS_LABEL, type Assignee, type HookAgent, type Status, type TaskDetail } from '../shared/types'
 import * as db from './db'
+import type { HookPayload } from './live'
 
 // 让 Claude Code 等 AI 工具直接操控 Baton：在本机开一个 MCP 服务（Streamable HTTP）。
+// 同一个端口还收 Claude Code、Codex 的 hooks（/hooks/claude、/hooks/codex），用来认出 AI 在跑什么。
 // 只监听 127.0.0.1，请求必须带 Authorization: Bearer <密钥>。
 // AI 改了数据会走同一个数据库，并通知界面刷新。
 
-export const MCP_PORT = 47821
+// 开发时可以换个端口，免得和平时开着的 Baton 撞上：BATON_PORT=47999 npm run dev
+export const MCP_PORT = Number(process.env.BATON_PORT) || 47821
 export const MCP_URL = `http://127.0.0.1:${MCP_PORT}/mcp`
+export const HOOKS_URL = `http://127.0.0.1:${MCP_PORT}/hooks`
+const LOCAL_HOSTS = [`127.0.0.1:${MCP_PORT}`, `localhost:${MCP_PORT}`]
+const HOOK_PATH = /^\/hooks\/(claude|codex)$/
 
 let httpServer: HttpServer | null = null
 let state: { running: boolean; error: string | null } = { running: false, error: null }
@@ -416,10 +422,16 @@ function buildServer(onChange: (summary: string) => void): McpServer {
   return server
 }
 
-function readJson(req: IncomingMessage): Promise<unknown> {
+function readJson(req: IncomingMessage, limit = Infinity): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let raw = ''
-    req.on('data', (chunk) => (raw += chunk))
+    req.on('data', (chunk) => {
+      raw += chunk
+      if (raw.length > limit) {
+        req.destroy()
+        reject(new Error('请求太大'))
+      }
+    })
     req.on('end', () => {
       try {
         resolve(raw ? JSON.parse(raw) : undefined)
@@ -431,9 +443,41 @@ function readJson(req: IncomingMessage): Promise<unknown> {
   })
 }
 
-/** 启动 MCP 服务；onChange 在 AI 改了数据后调用（用来刷新界面、提示用户） */
-export function startMcp(token: string, onChange: (summary: string) => void): void {
+/**
+ * 启动 MCP 服务；onChange 在 AI 改了数据后调用（用来刷新界面、提示用户），
+ * onHook 收 Claude Code、Codex 的 hooks 发来的事件（pid 是跑 hook 的那个进程，没报就是 0）
+ */
+export function startMcp(
+  token: string,
+  onChange: (summary: string) => void,
+  onHook: (agent: HookAgent, payload: HookPayload, pid: number) => void
+): void {
   httpServer = createServer(async (req, res) => {
+    const hook = req.url?.match(HOOK_PATH)
+    if (hook) {
+      if (req.method !== 'POST' || req.headers.authorization !== `Bearer ${token}` || !LOCAL_HOSTS.includes(req.headers.host ?? '')) {
+        res.writeHead(403).end()
+        return
+      }
+      let payload: unknown
+      try {
+        // 用完一个工具的事件会带上工具的输出，可能不小
+        payload = await readJson(req, 16 * 1024 * 1024)
+      } catch {
+        res.writeHead(400).end()
+        return
+      }
+      // 先回话，hooks 那边的命令马上就能结束，不耽误 AI 干活
+      res.writeHead(204).end()
+      if (payload && typeof payload === 'object') {
+        try {
+          onHook(hook[1] as HookAgent, payload as HookPayload, Number(req.headers['x-baton-pid']) || 0)
+        } catch (err) {
+          console.error('处理 hook 出错', err)
+        }
+      }
+      return
+    }
     if (!req.url?.startsWith('/mcp')) {
       res.writeHead(404).end()
       return
@@ -459,7 +503,7 @@ export function startMcp(token: string, onChange: (summary: string) => void): vo
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
       enableDnsRebindingProtection: true,
-      allowedHosts: [`127.0.0.1:${MCP_PORT}`, `localhost:${MCP_PORT}`]
+      allowedHosts: LOCAL_HOSTS
     })
     res.on('close', () => {
       transport.close()
