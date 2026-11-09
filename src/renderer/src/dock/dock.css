@@ -2418,6 +2418,22 @@ button.child-check:hover {
   font-weight: 600;
   color: var(--c, var(--accent));
 }
+/* 带着提示词的行走原生拖放：编号和标题在浏览器画的小纸条上，这里只留「挪到哪」贴在纸条下面；鼠标出了窗口就不显示 */
+.tree-preview.native {
+  padding: 3px 9px;
+  border-radius: 8px;
+}
+.tree-preview.native .ref,
+.tree-preview.native .tree-preview-title,
+.tree-preview.native .muted {
+  display: none;
+}
+.tree-preview.native .tree-preview-hint {
+  margin-left: 0;
+}
+body[data-drag-outside] .tree-preview.native {
+  visibility: hidden;
+}
 
 /* ---------- 月历 ---------- */
 

@@ -15,7 +15,7 @@ import { DateChip } from '../components/DatePicker'
 import { DeleteButton } from '../components/DeleteButton'
 import { InlineEdit, renderPrompt } from '../components/InlineEdit'
 import { PromptBox } from '../components/PromptBox'
-import { markDragging, useDndSensors, type DragHandle } from '../components/Sortable'
+import { markDragging, useDndSensors, useDragUnlessEditing, type DragHandle } from '../components/Sortable'
 import { openStatusMenu } from '../components/StatusMenu'
 import { StatusPicker } from '../components/StatusPicker'
 import { toast, useDropTarget } from '../dock/parts'
@@ -26,6 +26,7 @@ import { cx } from '../util'
 //   接力子任务（chained）——和上一个用实线连着，圆形节点，上一个完成后才轮到它
 //   独立子任务 ——和上一个断开，方形节点，随时可以做
 // 任何一行都能按住拖：上下拖换位置，拖的时候往右挪 = 变成上面那个子任务的子子任务，往左挪 = 提出来变成子任务。
+// 填了提示词的行走浏览器原生拖放：拖出窗口丢进 AI 的输入框，就粘进这一行自己的提示词。
 // 带着子子任务的子任务被拖动时，子子任务跟着走；它不能再被放进别的子任务里（最多两层）。
 // 做完的子任务（连同它的子子任务）收进最下面的「已完成」，一行一个，list 里只排没做完的。
 // 晾衣绳上还能拖到别的任务卡片：停在那张卡片的某个子任务上 = 当它的子子任务，停在卡片别处 = 当子任务排在最后。
@@ -113,6 +114,9 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
   const [adding, setAdding] = useState<string | null>(null)
   // 按下时鼠标在哪：加上挪了多少，就是现在在哪，用来找有没有拖到别的任务卡片上
   const start = useRef({ x: 0, y: 0 })
+  // 原生拖放（带提示词的行）：跟手的小纸条由浏览器画，预览只剩「挪到哪」，贴在纸条下面；grab = 按下的点在这一行里的位置
+  const [nativeDrag, setNativeDrag] = useState(false)
+  const grab = useRef({ x: 0, y: 0 })
   const cross = useCrossTarget()
 
   const byId = new Map<string, Subtask>(subtasks.flatMap((s) => [[s.id, s] as const, ...s.children.map((c) => [c.id, c] as const)]))
@@ -137,6 +141,7 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
     setOverId(null)
     setOffsetX(0)
     setCrossTarget(null)
+    setNativeDrag(false)
   }
 
   /** 拖到别的任务卡片上松手：挪过去。带着子子任务的只能当子任务 */
@@ -178,6 +183,9 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
           setOverId(String(a.id))
           const e = activatorEvent as PointerEvent | null
           start.current = { x: e?.clientX ?? 0, y: e?.clientY ?? 0 }
+          setNativeDrag(activatorEvent?.type === 'dragstart')
+          const rect = (e?.target as Element | null)?.closest?.('.stop, .child')?.getBoundingClientRect()
+          grab.current = rect ? { x: start.current.x - rect.left, y: start.current.y - rect.top } : { x: 0, y: 0 }
         }}
         onDragMove={({ active: a, delta }) => {
           setOffsetX(delta.x)
@@ -226,7 +234,16 @@ export function SubtaskRoute({ detail, compact }: { detail: TaskDetail; compact?
         {createPortal(
           <DragOverlay dropAnimation={null}>
             {active && (
-              <div className="tree-preview" style={{ '--c': detail.project.color } as CSSProperties}>
+              <div
+                className={cx('tree-preview', nativeDrag && 'native')}
+                style={
+                  {
+                    '--c': detail.project.color,
+                    // 纸条的左上角在鼠标左边 18、上边 16，大约 30 高
+                    transform: nativeDrag ? `translate(${grab.current.x - 18}px, ${grab.current.y + 20}px)` : undefined
+                  } as CSSProperties
+                }
+              >
                 <span className="ref">{active.depth === 0 ? `S${active.sub.ref}` : '·'}</span>
                 {/* 标题太长就截掉，后面「挪到哪」的提示要一直看得见 */}
                 <span className="tree-preview-title">{active.sub.title}</span>
@@ -272,13 +289,19 @@ function TreeRow({
   away: boolean
   onAddChild: () => void
 }) {
-  const { setNodeRef, transform, transition, attributes, listeners, isDragging } = useSortable({ id: row.id })
+  // 填了提示词的行可以按住拖进 AI 的输入框，带的是这一行自己的提示词，跟手的小纸条写着编号和标题；
+  // 在 Baton 里松手照样是排序、挪到别的卡片。没填提示词的行还是普通的鼠标拖动
+  const prompt = row.sub.prompt ? expandPrompt(row.sub.prompt, detail.task) : ''
+  const slip = { title: `${row.depth === 0 ? `S${row.sub.ref}` : label} ${row.sub.title}`, color: detail.project.color }
+  const dragOut = prompt ? { text: prompt, slip } : undefined
+  const { setNodeRef, transform, transition, attributes, listeners, isDragging } = useSortable({ id: row.id, data: { dragOut } })
   const drag: DragHandle = {
     setNodeRef,
     style: { transform: CSS.Translate.toString(transform), transition },
     attributes,
     listeners,
-    isDragging
+    isDragging,
+    draggable: Boolean(dragOut)
   }
   // 被拖着的那一行变成一条插入线，缩进表示松手后落在哪一层
   if (isDragging) {
@@ -336,6 +359,7 @@ function Stop({
   const busy = busyOf(enabled, s.agent, s.status, mine)
   const next = nextStatus(s.status)
   const crossOver = useCrossTarget()?.parentId === s.id
+  const rowDrag = useDragUnlessEditing(drag.draggable)
 
   // 把文字扔到这个子任务上 = 加一个子子任务，文字就是它的提示词
   const drop = useDropTarget(async (text) => {
@@ -373,6 +397,7 @@ function Stop({
         className="stop-main"
         {...drag.attributes}
         {...drag.listeners}
+        {...rowDrag}
         onContextMenu={(e) =>
           openStatusMenu(e, {
             title: `S${s.ref} ${s.title}`,
@@ -462,6 +487,7 @@ function ChildRow({
   drag: DragHandle
 }) {
   const done = c.status === 'done'
+  const rowDrag = useDragUnlessEditing(drag.draggable)
   const savePrompt = (value: string): void => {
     api.updateSubtask(c.id, { prompt: value })
   }
@@ -474,6 +500,7 @@ function ChildRow({
       data-drop-label={parentLabel}
       {...drag.attributes}
       {...drag.listeners}
+      {...rowDrag}
       onContextMenu={(e) =>
         openStatusMenu(e, {
           title: `${label} ${c.title}`,
